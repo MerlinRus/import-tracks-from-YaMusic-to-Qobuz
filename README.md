@@ -66,12 +66,24 @@ QSYNC_DB_PATH=qobuzsync.db
 QSYNC_COOKIE_SECURE=false
 QSYNC_LOGIN_PROFILE_DIR=.qobuz_login_profiles
 QSYNC_BROWSER_RUNTIME_DIR=
-QSYNC_BROWSER_LOGIN_ENABLED=true
+QSYNC_BROWSER_LOGIN_ENABLED=false
+QSYNC_SECRET_KEY=
+QSYNC_SECRET_KEY_FILE=.qsync_secret
+QSYNC_MAX_UPLOAD_BYTES=1048576
+QSYNC_MAX_TRACKS=2000
+QSYNC_MAX_TRACK_NAME_LENGTH=300
+QSYNC_MAX_PLAYLIST_NAME_LENGTH=120
+QSYNC_MAX_SEARCH_QUERY_LENGTH=300
+QSYNC_MAX_YANDEX_URL_LENGTH=2048
+QSYNC_SEARCH_CACHE_TTL=2592000
+QSYNC_SEARCH_NEGATIVE_CACHE_TTL=3600
 ```
 
 `QOBUZ_APP_ID` и `QOBUZ_APP_SECRET` используются как серверные значения по умолчанию. Пользователь может заменить их в форме Qobuz в своей сессии.
 
 `QSYNC_DB_PATH` задает путь к SQLite-базе с пользовательскими сессиями. Этот файл содержит токены пользователей, поэтому его нельзя коммитить, отдавать через nginx или класть в публичные бэкапы.
+
+Токены в SQLite сохраняются в зашифрованном виде (`enc:v1:...`). Ключ берется из `QSYNC_SECRET_KEY`; если переменная не задана, сервис создаст локальный key-файл из `QSYNC_SECRET_KEY_FILE`. На сервере лучше задать длинный случайный `QSYNC_SECRET_KEY` в `.env` или хранить key-файл в `/var/lib/qobuzsync` с правами `600`.
 
 `QSYNC_COOKIE_SECURE=true` нужно ставить на сервере за HTTPS. Для локального `http://127.0.0.1:8000` оставьте `false`.
 
@@ -80,6 +92,10 @@ QSYNC_BROWSER_LOGIN_ENABLED=true
 `QSYNC_BROWSER_RUNTIME_DIR` задает домашнюю runtime-директорию для серверного Chromium. На сервере укажите `/var/lib/qobuzsync`, чтобы cache/config/crashpad не пытались писать в недоступный home.
 
 `QSYNC_BROWSER_LOGIN_ENABLED=false` отключает серверный браузерный вход Qobuz. Для публичного сервиса это рекомендуемый режим: пользователь вставляет Qobuz token вручную, а сервер не пытается запускать Chromium.
+
+`QSYNC_MAX_*` ограничивают размер файлов, число треков и длину пользовательских строк. Это защита от случайной перегрузки и простого DoS. При необходимости можно поднять `QSYNC_MAX_TRACKS`, но учитывайте лимиты Qobuz/Yandex API.
+
+`QSYNC_SEARCH_CACHE_TTL` задает срок жизни успешных результатов сопоставления, `QSYNC_SEARCH_NEGATIVE_CACHE_TTL` — срок жизни неудачных поисков. Кэш изолируется по Qobuz-контексту сессии, чтобы один аккаунт не загрязнял результаты другого.
 
 ## Вход В Qobuz
 
@@ -128,6 +144,8 @@ QSYNC_DB_PATH=/var/lib/qobuzsync/qobuzsync.db
 QSYNC_LOGIN_PROFILE_DIR=/var/lib/qobuzsync/qobuz_login_profiles
 QSYNC_BROWSER_RUNTIME_DIR=/var/lib/qobuzsync
 QSYNC_BROWSER_LOGIN_ENABLED=false
+QSYNC_SECRET_KEY=replace-with-long-random-secret
+QSYNC_SECRET_KEY_FILE=/var/lib/qobuzsync/.qsync_secret
 ```
 
 Создайте директорию для базы и браузерных профилей, затем отдайте ее пользователю сервиса:
@@ -221,6 +239,7 @@ server {
 Эти файлы не коммитятся:
 
 - `.env` - серверные секреты;
+- `.qsync_secret` - локальный ключ шифрования токенов;
 - `qobuzsync.db` и `qobuzsync.db-*` - пользовательские сессии и токены;
 - `.qobuz_login_profile/` - старый локальный профиль браузерного входа Qobuz;
 - `.qobuz_login_profiles/` - профили браузерного входа по сессиям;

@@ -13,6 +13,7 @@ env/
 .codegraph/
 .qobuz_login_profile/
 .qobuz_login_profiles/
+.qsync_secret
 qobuzsync.db
 qobuzsync.db-*
 

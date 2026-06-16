@@ -3,6 +3,8 @@ import time
 import json
 import logging
 import re
+import base64
+import hmac
 import requests
 import asyncio
 import threading
@@ -29,7 +31,7 @@ app = FastAPI(title="Qobuz Playlist Importer")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("qobuz_web")
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_COOKIE_NAME = "qsync_sid"
@@ -37,10 +39,26 @@ SESSION_TTL_SECONDS = 60 * 60 * 24 * 90
 SESSION_COOKIE_SECURE = os.getenv("QSYNC_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
 DB_FILE = os.getenv("QSYNC_DB_PATH", "qobuzsync.db")
 LOGIN_PROFILE_ROOT = os.getenv("QSYNC_LOGIN_PROFILE_DIR") or os.path.join(APP_DIR, ".qobuz_login_profiles")
-BROWSER_LOGIN_ENABLED = os.getenv("QSYNC_BROWSER_LOGIN_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+BROWSER_LOGIN_ENABLED = os.getenv("QSYNC_BROWSER_LOGIN_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID") or "30650571"
-SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET") or "5929d2b8b9354226a0a73d327f918991"
+SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET") or ""
+SECRET_KEY_FILE = os.getenv("QSYNC_SECRET_KEY_FILE")
+if not SECRET_KEY_FILE:
+    db_dir = os.path.dirname(os.path.abspath(DB_FILE)) or APP_DIR
+    SECRET_KEY_FILE = os.path.join(db_dir, ".qsync_secret")
+MAX_UPLOAD_BYTES = int(os.getenv("QSYNC_MAX_UPLOAD_BYTES", str(1024 * 1024)))
+MAX_TRACKS_PER_REQUEST = int(os.getenv("QSYNC_MAX_TRACKS", "2000"))
+MAX_TRACK_NAME_LENGTH = int(os.getenv("QSYNC_MAX_TRACK_NAME_LENGTH", "300"))
+MAX_PLAYLIST_NAME_LENGTH = int(os.getenv("QSYNC_MAX_PLAYLIST_NAME_LENGTH", "120"))
+MAX_SEARCH_QUERY_LENGTH = int(os.getenv("QSYNC_MAX_SEARCH_QUERY_LENGTH", "300"))
+MAX_YANDEX_URL_LENGTH = int(os.getenv("QSYNC_MAX_YANDEX_URL_LENGTH", "2048"))
+SEARCH_CACHE_POSITIVE_TTL_SECONDS = int(os.getenv("QSYNC_SEARCH_CACHE_TTL", str(60 * 60 * 24 * 30)))
+SEARCH_CACHE_NEGATIVE_TTL_SECONDS = int(os.getenv("QSYNC_SEARCH_NEGATIVE_CACHE_TTL", str(60 * 60)))
 db_lock = threading.Lock()
+rate_lock = threading.Lock()
+rate_buckets = {}
+SENSITIVE_SESSION_FIELDS = {"qobuz_token", "qobuz_app_secret", "yandex_token"}
+SECRET_PREFIX = "enc:v1:"
 QOBUZ_APP_ID_CANDIDATES = [
     SERVER_DEFAULT_APP_ID,
     "798273057",     # Android
@@ -52,7 +70,90 @@ QOBUZ_APP_ID_CANDIDATES = [
 ]
 qobuz_web_app_ids_cache = {"expires_at": 0, "app_ids": []}
 
+def get_secret_key_material() -> bytes:
+    env_key = os.getenv("QSYNC_SECRET_KEY")
+    if env_key:
+        return env_key.encode("utf-8")
+
+    key_dir = os.path.dirname(os.path.abspath(SECRET_KEY_FILE))
+    os.makedirs(key_dir, mode=0o700, exist_ok=True)
+    if os.path.exists(SECRET_KEY_FILE):
+        with open(SECRET_KEY_FILE, "rb") as f:
+            return f.read().strip()
+
+    key = secrets.token_urlsafe(48).encode("ascii")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(SECRET_KEY_FILE, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+            f.write(b"\n")
+    finally:
+        try:
+            os.chmod(SECRET_KEY_FILE, 0o600)
+        except OSError:
+            pass
+    logger.warning(
+        "QSYNC_SECRET_KEY is not set; generated local encryption key file at %s",
+        SECRET_KEY_FILE,
+    )
+    return key
+
+SECRET_KEY = hashlib.sha256(get_secret_key_material()).digest()
+
+def make_hmac(message: bytes) -> bytes:
+    return hmac.new(SECRET_KEY, message, hashlib.sha256).digest()
+
+def xor_stream(data: bytes, nonce: bytes) -> bytes:
+    output = bytearray()
+    counter = 0
+    while len(output) < len(data):
+        block = make_hmac(b"stream:" + nonce + counter.to_bytes(4, "big"))
+        output.extend(block)
+        counter += 1
+    return bytes(value ^ output[idx] for idx, value in enumerate(data))
+
+def encrypt_secret(value):
+    if value is None or value == "":
+        return value
+    if isinstance(value, str) and value.startswith(SECRET_PREFIX):
+        return value
+    raw = str(value).encode("utf-8")
+    nonce = secrets.token_bytes(16)
+    ciphertext = xor_stream(raw, nonce)
+    tag = make_hmac(b"mac:" + nonce + ciphertext)
+    payload = base64.urlsafe_b64encode(nonce + tag + ciphertext).decode("ascii")
+    return SECRET_PREFIX + payload
+
+def decrypt_secret(value):
+    if value is None or value == "" or not isinstance(value, str):
+        return value
+    if not value.startswith(SECRET_PREFIX):
+        return value
+    try:
+        payload = base64.urlsafe_b64decode(value[len(SECRET_PREFIX):].encode("ascii"))
+        nonce, tag, ciphertext = payload[:16], payload[16:48], payload[48:]
+        expected = make_hmac(b"mac:" + nonce + ciphertext)
+        if not hmac.compare_digest(tag, expected):
+            logger.error("Encrypted session value failed integrity check")
+            return ""
+        return xor_stream(ciphertext, nonce).decode("utf-8")
+    except Exception as exc:
+        logger.error("Failed to decrypt session value: %s", exc)
+        return ""
+
+def decrypt_session_row(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return row
+    row = dict(row)
+    for field in SENSITIVE_SESSION_FIELDS:
+        row[field] = decrypt_secret(row.get(field))
+    return row
+
 def init_db():
+    db_dir = os.path.dirname(os.path.abspath(DB_FILE))
+    if db_dir:
+        os.makedirs(db_dir, mode=0o700, exist_ok=True)
     with db_lock:
         with sqlite3.connect(DB_FILE) as conn:
             conn.execute("""
@@ -68,6 +169,7 @@ def init_db():
                 )
             """)
             conn.commit()
+    cleanup_expired_sessions()
 
 def db_execute(query, params=(), fetchone=False):
     with db_lock:
@@ -88,14 +190,36 @@ def create_session() -> str:
             qobuz_working_app_id, yandex_token, created_at, updated_at
         ) VALUES (?, '', ?, ?, NULL, NULL, ?, ?)
         """,
-        (session_id, SERVER_DEFAULT_APP_ID, SERVER_DEFAULT_APP_SECRET, now, now),
+        (session_id, SERVER_DEFAULT_APP_ID, encrypt_secret(SERVER_DEFAULT_APP_SECRET), now, now),
     )
     return session_id
+
+def delete_session(session_id: str):
+    if session_id:
+        db_execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+def cleanup_expired_sessions():
+    cutoff = int(time.time()) - SESSION_TTL_SECONDS
+    db_execute("DELETE FROM sessions WHERE updated_at < ?", (cutoff,))
 
 def get_session(session_id: str) -> Optional[dict]:
     if not session_id:
         return None
-    return db_execute("SELECT * FROM sessions WHERE id = ?", (session_id,), fetchone=True)
+    row = db_execute("SELECT * FROM sessions WHERE id = ?", (session_id,), fetchone=True)
+    if not row:
+        return None
+    if int(row.get("updated_at") or 0) < int(time.time()) - SESSION_TTL_SECONDS:
+        delete_session(session_id)
+        return None
+    decrypted = decrypt_session_row(row)
+    plaintext_updates = {
+        field: decrypted.get(field)
+        for field in SENSITIVE_SESSION_FIELDS
+        if row.get(field) and not str(row.get(field)).startswith(SECRET_PREFIX)
+    }
+    if plaintext_updates:
+        update_session_values(session_id, plaintext_updates)
+    return decrypted
 
 def set_session_cookie(response: Response, session_id: str):
     response.set_cookie(
@@ -123,6 +247,104 @@ def get_websocket_session(websocket: WebSocket) -> dict:
         raise WebSocketDisconnect(code=4401)
     return session
 
+RATE_LIMIT_RULES = {
+    "qobuz_login": (5, 600),
+    "browser_login": (1, 600),
+    "config_save": (20, 300),
+    "parse_tracks": (30, 300),
+    "parse_url": (15, 300),
+    "manual_search": (120, 300),
+    "playlist_write": (20, 300),
+    "match_ws": (10, 300),
+    "yandex_auth_ws": (5, 600),
+    "yandex_liked": (15, 300),
+}
+
+def client_host_from_request(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+def client_host_from_websocket(websocket: WebSocket) -> str:
+    forwarded_for = websocket.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return websocket.client.host if websocket.client else "unknown"
+
+def check_rate_limit(scope: str, identity: str):
+    limit, window = RATE_LIMIT_RULES[scope]
+    now = time.monotonic()
+    key = (scope, identity)
+    with rate_lock:
+        bucket = [ts for ts in rate_buckets.get(key, []) if now - ts < window]
+        if len(bucket) >= limit:
+            retry_after = max(1, int(window - (now - bucket[0])))
+            raise HTTPException(
+                status_code=429,
+                detail=f"Слишком много запросов. Попробуйте через {retry_after} сек.",
+            )
+        bucket.append(now)
+        rate_buckets[key] = bucket
+
+def check_ws_rate_limit(scope: str, identity: str):
+    try:
+        check_rate_limit(scope, identity)
+    except HTTPException as exc:
+        return exc.detail
+    return None
+
+def rate_identity(request: Request, session: Optional[dict] = None) -> str:
+    if session and session.get("id"):
+        return f"sid:{session['id']}"
+    cookie_sid = request.cookies.get(SESSION_COOKIE_NAME)
+    if cookie_sid:
+        return f"sid:{cookie_sid}"
+    return f"ip:{client_host_from_request(request)}"
+
+def ws_rate_identity(websocket: WebSocket, session: Optional[dict] = None) -> str:
+    if session and session.get("id"):
+        return f"sid:{session['id']}"
+    cookie_sid = websocket.cookies.get(SESSION_COOKIE_NAME)
+    if cookie_sid:
+        return f"sid:{cookie_sid}"
+    return f"ip:{client_host_from_websocket(websocket)}"
+
+def enforce_http_rate_limit(scope: str, request: Request, session: Optional[dict] = None):
+    check_rate_limit(scope, rate_identity(request, session))
+
+def normalize_track_names(lines: List[str]) -> List[str]:
+    track_names = []
+    for line in lines:
+        track = str(line).strip()
+        if not track:
+            continue
+        if len(track) > MAX_TRACK_NAME_LENGTH:
+            raise ValueError(f"Название трека длиннее {MAX_TRACK_NAME_LENGTH} символов")
+        track_names.append(track)
+        if len(track_names) > MAX_TRACKS_PER_REQUEST:
+            raise ValueError(f"Слишком много треков. Максимум: {MAX_TRACKS_PER_REQUEST}")
+    return track_names
+
+def validate_query_text(query: str) -> str:
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("Пустой поисковый запрос")
+    if len(query) > MAX_SEARCH_QUERY_LENGTH:
+        raise ValueError(f"Поисковый запрос длиннее {MAX_SEARCH_QUERY_LENGTH} символов")
+    return query
+
+def validate_playlist_name(name: Optional[str]) -> Optional[str]:
+    if name is None:
+        return None
+    name = name.strip()
+    if len(name) > MAX_PLAYLIST_NAME_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Название плейлиста длиннее {MAX_PLAYLIST_NAME_LENGTH} символов",
+        )
+    return name
+
 def update_session_values(session_id: str, updates: dict):
     if not updates:
         return
@@ -137,7 +359,10 @@ def update_session_values(session_id: str, updates: dict):
     if not fields:
         return
     assignments = ", ".join(f"{field} = ?" for field in fields)
-    values = [updates[field] for field in fields]
+    values = [
+        encrypt_secret(updates[field]) if field in SENSITIVE_SESSION_FIELDS else updates[field]
+        for field in fields
+    ]
     values.extend([int(time.time()), session_id])
     db_execute(f"UPDATE sessions SET {assignments}, updated_at = ? WHERE id = ?", values)
 
@@ -272,14 +497,42 @@ def get_thread_qobuz_client(session: dict) -> QobuzDirect:
 
     return cached_client
 
-def search_track_rich_thread(query: str, session: dict) -> Optional[dict]:
-    return search_track_rich(get_thread_qobuz_client(session), query)
+def qobuz_cache_scope(session: dict) -> str:
+    app_id = session.get("qobuz_working_app_id") or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID
+    token = session.get("qobuz_token") or ""
+    return hashlib.sha256(f"{app_id}:{token}".encode("utf-8")).hexdigest()
 
-def search_track_rich(cl: QobuzDirect, query: str) -> Optional[dict]:
-    query_key = query.lower().strip()
+def search_cache_key(query: str, session: dict) -> str:
+    return f"{qobuz_cache_scope(session)}:{query.lower().strip()}"
+
+def get_cached_search_result(cache_key: str):
+    now = int(time.time())
     with cache_lock:
-        if query_key in search_cache:
-            return search_cache[query_key]
+        entry = search_cache.get(cache_key)
+        if not isinstance(entry, dict) or "cached_at" not in entry:
+            return None, False
+        result = entry.get("result")
+        ttl = SEARCH_CACHE_NEGATIVE_TTL_SECONDS if result is None else SEARCH_CACHE_POSITIVE_TTL_SECONDS
+        if now - int(entry.get("cached_at") or 0) > ttl:
+            search_cache.pop(cache_key, None)
+            return None, False
+        return result, True
+
+def set_cached_search_result(cache_key: str, result):
+    with cache_lock:
+        search_cache[cache_key] = {
+            "cached_at": int(time.time()),
+            "result": result,
+        }
+
+def search_track_rich_thread(query: str, session: dict) -> Optional[dict]:
+    return search_track_rich(get_thread_qobuz_client(session), query, session)
+
+def search_track_rich(cl: QobuzDirect, query: str, session: dict) -> Optional[dict]:
+    query_key = search_cache_key(query, session)
+    cached_result, found = get_cached_search_result(query_key)
+    if found:
+        return cached_result
 
     method = "catalog/search"
     timestamp = str(int(time.time()))
@@ -309,8 +562,7 @@ def search_track_rich(cl: QobuzDirect, query: str) -> Optional[dict]:
                 "hires": track.get("hires", False) or track.get("maximum_bit_depth", 16) > 16
             }
         
-        with cache_lock:
-            search_cache[query_key] = track_info
+        set_cached_search_result(query_key, track_info)
             
         return track_info
     except Exception as e:
@@ -413,13 +665,13 @@ def get_yandex_profile(token: str = ""):
 async def get_config(request: Request, response: Response):
     session = get_or_create_session(request, response)
     qobuz_client = make_qobuz_client(session)
-    profile = get_qobuz_profile(qobuz_client, [
+    profile = await asyncio.to_thread(get_qobuz_profile, qobuz_client, [
         session.get("qobuz_working_app_id"),
         session.get("qobuz_app_id"),
     ])
     if profile.get("authorized") and profile.get("app_id") != session.get("qobuz_working_app_id"):
         update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
-    yandex_profile = get_yandex_profile(session.get("yandex_token") or "")
+    yandex_profile = await asyncio.to_thread(get_yandex_profile, session.get("yandex_token") or "")
     return {
         "has_qobuz_token": bool(session.get("qobuz_token")),
         "app_id": session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID,
@@ -431,6 +683,7 @@ async def get_config(request: Request, response: Response):
 @app.post("/api/config")
 async def save_config(data: ConfigData, request: Request, response: Response):
     session = get_or_create_session(request, response)
+    enforce_http_rate_limit("config_save", request, session)
     try:
         app_id = data.app_id.strip() or SERVER_DEFAULT_APP_ID
         token = data.token.strip() or session.get("qobuz_token") or ""
@@ -443,7 +696,7 @@ async def save_config(data: ConfigData, request: Request, response: Response):
         })
         session = get_session(session["id"])
         qobuz_client = make_qobuz_client(session)
-        profile = get_qobuz_profile(qobuz_client, [app_id])
+        profile = await asyncio.to_thread(get_qobuz_profile, qobuz_client, [app_id])
         if profile.get("authorized"):
             update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
         return {"status": "success", "profile": profile}
@@ -454,7 +707,7 @@ async def save_config(data: ConfigData, request: Request, response: Response):
 async def test_auth(request: Request, response: Response):
     session = get_or_create_session(request, response)
     qobuz_client = make_qobuz_client(session)
-    profile = get_qobuz_profile(qobuz_client, [
+    profile = await asyncio.to_thread(get_qobuz_profile, qobuz_client, [
         session.get("qobuz_working_app_id"),
         session.get("qobuz_app_id"),
     ])
@@ -469,13 +722,27 @@ async def qobuz_logout(request: Request, response: Response):
     })
     return {"status": "success"}
 
+@app.post("/api/session/delete")
+async def delete_current_session(request: Request, response: Response):
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_id:
+        delete_session(session_id)
+    response.delete_cookie(
+        SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+    )
+    return {"status": "success"}
+
 @app.post("/api/auth/qobuz-login")
 async def qobuz_password_login(data: QobuzLoginData, request: Request, response: Response):
     session = get_or_create_session(request, response)
+    enforce_http_rate_limit("qobuz_login", request, session)
     email = data.email.strip()
     password = data.password
 
-    if not email or not password:
+    if not email or not password or len(email) > 254 or len(password) > 256:
         raise HTTPException(status_code=400, detail="Введите email и пароль Qobuz")
 
     preferred_app_id = (data.app_id or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID).strip()
@@ -518,6 +785,7 @@ async def browser_login(request: Request, response: Response):
         )
 
     session = get_or_create_session(request, response)
+    enforce_http_rate_limit("browser_login", request, session)
     logger.info("Запуск автоматического перехвата токена через браузер...")
 
     def run_capture_process():
@@ -583,21 +851,37 @@ async def browser_login(request: Request, response: Response):
 
 @app.post("/api/tracks/parse")
 async def parse_tracks(
+    request: Request,
+    response: Response,
     file: Optional[UploadFile] = File(None),
     text: Optional[str] = Form(None)
 ):
-    track_names = []
-    if file:
-        content = await file.read()
-        try:
-            lines = content.decode("utf-8").splitlines()
-        except UnicodeDecodeError:
-            lines = content.decode("cp1251", errors="ignore").splitlines()
-        track_names = [line.strip() for line in lines if line.strip()]
-    elif text:
-        track_names = [line.strip() for line in text.splitlines() if line.strip()]
-        
-    return {"tracks": track_names}
+    session = get_or_create_session(request, response)
+    enforce_http_rate_limit("parse_tracks", request, session)
+    try:
+        track_names = []
+        if file:
+            content = await file.read(MAX_UPLOAD_BYTES + 1)
+            if len(content) > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Файл слишком большой. Максимум: {MAX_UPLOAD_BYTES} байт",
+                )
+            try:
+                lines = content.decode("utf-8").splitlines()
+            except UnicodeDecodeError:
+                lines = content.decode("cp1251", errors="ignore").splitlines()
+            track_names = normalize_track_names(lines)
+        elif text:
+            if len(text.encode("utf-8")) > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Текст слишком большой. Максимум: {MAX_UPLOAD_BYTES} байт",
+                )
+            track_names = normalize_track_names(text.splitlines())
+        return {"tracks": track_names}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 def parse_yandex_music_url(url: str, session: dict):
     # Clean up the URL (remove query parameters)
@@ -785,8 +1069,12 @@ def parse_yandex_music_url(url: str, session: dict):
 @app.post("/api/tracks/parse-url")
 def parse_tracks_url(data: UrlParseRequest, request: Request, response: Response):
     session = get_or_create_session(request, response)
+    enforce_http_rate_limit("parse_url", request, session)
     try:
+        if len(data.url or "") > MAX_YANDEX_URL_LENGTH:
+            raise ValueError(f"Ссылка длиннее {MAX_YANDEX_URL_LENGTH} символов")
         tracks, playlist_name = parse_yandex_music_url(data.url, session)
+        tracks = normalize_track_names(tracks)
         return {"tracks": tracks, "playlist_name": playlist_name}
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -797,17 +1085,22 @@ def parse_tracks_url(data: UrlParseRequest, request: Request, response: Response
 @app.post("/api/search/single")
 async def search_single(data: SingleSearchQuery, request: Request, response: Response):
     session = get_or_create_session(request, response)
-    results = search_tracks_rich_multi(make_qobuz_client(session), data.query)
+    enforce_http_rate_limit("manual_search", request, session)
+    try:
+        query = validate_query_text(data.query)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    results = await asyncio.to_thread(search_tracks_rich_multi, make_qobuz_client(session), query)
     return {"results": results}
 
 @app.get("/api/qobuz/playlists")
 async def get_qobuz_playlists(request: Request, response: Response):
     session = get_or_create_session(request, response)
     try:
-        qobuz_client, _profile = ensure_qobuz_authorized(session)
+        qobuz_client, _profile = await asyncio.to_thread(ensure_qobuz_authorized, session)
             
         params = {"limit": 100}
-        res = qobuz_client._request("playlist/getUserPlaylists", params)
+        res = await asyncio.to_thread(qobuz_client._request, "playlist/getUserPlaylists", params)
         if "playlists" in res and "items" in res["playlists"]:
             items = []
             for item in res["playlists"]["items"]:
@@ -857,66 +1150,103 @@ def get_playlist_track_ids(cl: QobuzDirect, playlist_id: str) -> List[int]:
 
 @app.post("/api/playlist/create")
 async def create_playlist(data: PlaylistData, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    enforce_http_rate_limit("playlist_write", request, session)
     if not data.track_ids:
         raise HTTPException(status_code=400, detail="Список ID треков пуст")
-    
-    session = get_or_create_session(request, response)
-    qobuz_client, profile = ensure_qobuz_authorized(session)
-    account = {
-        "display_name": profile.get("display_name"),
-        "id": profile.get("id"),
-    }
-    
-    playlist_id = data.playlist_id
-    if not playlist_id:
-        if not data.name:
-            raise HTTPException(status_code=400, detail="Название плейлиста не указано")
-        playlist_id = qobuz_client.create_playlist(data.name)
+    if len(data.track_ids) > MAX_TRACKS_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"Слишком много треков. Максимум: {MAX_TRACKS_PER_REQUEST}")
+
+    try:
+        track_ids = [int(track_id) for track_id in data.track_ids if int(track_id) > 0]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Список ID треков содержит некорректные значения")
+    if not track_ids:
+        raise HTTPException(status_code=400, detail="Список ID треков пуст")
+
+    playlist_name = validate_playlist_name(data.name)
+    playlist_id_input = (data.playlist_id or "").strip()
+    if playlist_id_input and len(playlist_id_input) > 80:
+        raise HTTPException(status_code=400, detail="Некорректный ID плейлиста")
+
+    def create_playlist_sync():
+        qobuz_client, profile = ensure_qobuz_authorized(session)
+        account = {
+            "display_name": profile.get("display_name"),
+            "id": profile.get("id"),
+        }
+
+        playlist_id = playlist_id_input
+        import_track_ids = list(track_ids)
         if not playlist_id:
-            raise HTTPException(status_code=500, detail="Не удалось создать плейлист в Qobuz")
-        is_new = True
-    else:
-        is_new = False
-        # Fetch existing tracks in Qobuz playlist to skip duplicates (Synchronization)
-        existing_ids = get_playlist_track_ids(qobuz_client, playlist_id)
-        existing_set = set(existing_ids)
-        new_track_ids = [tid for tid in data.track_ids if tid not in existing_set]
-        
-        if not new_track_ids:
+            if not playlist_name:
+                raise HTTPException(status_code=400, detail="Название плейлиста не указано")
+            playlist_id = qobuz_client.create_playlist(playlist_name)
+            if not playlist_id:
+                raise HTTPException(status_code=500, detail="Не удалось создать плейлист в Qobuz")
+            is_new = True
+        else:
+            is_new = False
+            existing_ids = get_playlist_track_ids(qobuz_client, playlist_id)
+            existing_set = set(existing_ids)
+            import_track_ids = [tid for tid in import_track_ids if tid not in existing_set]
+
+            if not import_track_ids:
+                return {
+                    "status": "success",
+                    "playlist_id": playlist_id,
+                    "count": 0,
+                    "is_new": False,
+                    "account": account,
+                    "detail": "Все треки уже есть в плейлисте (новых треков нет)"
+                }
+
+        success = True
+        for i in range(0, len(import_track_ids), 100):
+            chunk = import_track_ids[i:i+100]
+            if not qobuz_client.add_tracks_to_playlist(playlist_id, chunk):
+                success = False
+
+        if success:
             return {
                 "status": "success",
                 "playlist_id": playlist_id,
-                "count": 0,
-                "is_new": False,
+                "count": len(import_track_ids),
+                "is_new": is_new,
                 "account": account,
-                "detail": "Все треки уже есть в плейлисте (новых треков нет)"
             }
-            
-        data.track_ids = new_track_ids
-        
-    success = True
-    for i in range(0, len(data.track_ids), 100):
-        chunk = data.track_ids[i:i+100]
-        if not qobuz_client.add_tracks_to_playlist(playlist_id, chunk):
-            success = False
-            
-    if success:
-        return {"status": "success", "playlist_id": playlist_id, "count": len(data.track_ids), "is_new": is_new, "account": account}
-    else:
         status_name = "partial_success"
         detail = "Часть треков не удалось добавить"
         return {"status": status_name, "playlist_id": playlist_id, "detail": detail, "is_new": is_new, "account": account}
+
+    return await asyncio.to_thread(create_playlist_sync)
 
 @app.websocket("/api/ws/match")
 async def websocket_match(websocket: WebSocket):
     await websocket.accept()
     try:
         session = get_websocket_session(websocket)
-        data = await websocket.receive_text()
-        req = json.loads(data)
-        queries = req.get("tracks", [])
+        rate_error = check_ws_rate_limit("match_ws", ws_rate_identity(websocket, session))
+        if rate_error:
+            await websocket.send_json({"type": "error", "message": rate_error})
+            await websocket.close(code=4408)
+            return
+        try:
+            data = await websocket.receive_text()
+            req = json.loads(data)
+            raw_tracks = req.get("tracks", [])
+            if not isinstance(raw_tracks, list):
+                raise ValueError("Некорректный список треков")
+            queries = normalize_track_names(raw_tracks)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+            await websocket.close(code=1003)
+            return
         
         total = len(queries)
+        if total == 0:
+            await websocket.send_json({"type": "done", "total": 0, "matched": 0})
+            return
         matched_count = 0
         processed_count = 0
         
@@ -986,6 +1316,7 @@ def yandex_logout(request: Request, response: Response):
 @app.post("/api/tracks/yandex-liked")
 def parse_yandex_liked(request: Request, response: Response):
     session = get_or_create_session(request, response)
+    enforce_http_rate_limit("yandex_liked", request, session)
     yandex_token = session.get("yandex_token") or ""
     if not yandex_token:
         raise HTTPException(status_code=400, detail="Для импорта 'Мне нравится' необходимо авторизоваться в Яндекс.Музыке.")
@@ -1005,7 +1336,10 @@ def parse_yandex_liked(request: Request, response: Response):
                 artists = ", ".join([a.name for a in track.artists])
                 track_names.append(f"{artists} - {track.title}")
                 
+        track_names = normalize_track_names(track_names)
         return {"tracks": track_names, "playlist_name": "Мне нравится"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to fetch liked tracks directly: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка при загрузке треков: {str(e)}")
@@ -1019,6 +1353,11 @@ async def websocket_yandex_auth(websocket: WebSocket):
         session = get_websocket_session(websocket)
     except WebSocketDisconnect:
         await websocket.send_json({"type": "error", "message": "Сессия не найдена. Обновите страницу и попробуйте снова."})
+        return
+    rate_error = check_ws_rate_limit("yandex_auth_ws", ws_rate_identity(websocket, session))
+    if rate_error:
+        await websocket.send_json({"type": "error", "message": rate_error})
+        await websocket.close(code=4408)
         return
     loop = asyncio.get_running_loop()
     event_queue = asyncio.Queue()

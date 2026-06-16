@@ -131,6 +131,10 @@
                                 Выйти из Qobuz
                             </button>
                         </div>
+                        <div class="divider"></div>
+                        <button type="button" class="btn btn-secondary btn-block" id="deleteSessionBtn" style="border-color: rgba(239, 68, 68, 0.25); color: var(--color-danger);">
+                            Удалить данные сессии
+                        </button>
                     </div>
                 </section>
 
@@ -473,6 +477,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             document.getElementById('configForm').addEventListener('submit', saveConfig);
             document.getElementById('browserLoginBtn').addEventListener('click', triggerBrowserLogin);
             document.getElementById('qobuzLogoutBtn').addEventListener('click', logoutQobuz);
+            document.getElementById('deleteSessionBtn').addEventListener('click', deleteSessionData);
             document.getElementById('yandexLoginBtn').addEventListener('click', openYandexAuthModal);
             document.getElementById('yandexLogoutBtn').addEventListener('click', logoutYandex);
             document.getElementById('yandexImportLikedBtn').addEventListener('click', importYandexLiked);
@@ -692,6 +697,28 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                 addLog('Qobuz отключен для этой сессии.', 'success');
             } catch (err) {
                 addLog(`Ошибка выхода из Qobuz: ${err.message}`, 'error');
+            }
+        }
+
+        async function deleteSessionData() {
+            if (!confirm('Удалить сохраненные Qobuz/Yandex токены этой сессии?')) {
+                return;
+            }
+            try {
+                const res = await fetch(`${API_BASE}/session/delete`, { method: 'POST' });
+                await readApiResponse(res);
+                hasSavedQobuzToken = false;
+                parsedTracks = [];
+                matchedTracks = [];
+                unmatchedTracks = [];
+                document.getElementById('tokenInput').value = '';
+                document.getElementById('tokenInput').placeholder = 'Вставьте Qobuz token...';
+                updateAuthIndicator({ authorized: false });
+                updateYandexAuthIndicator({ authorized: false });
+                addLog('Данные текущей сессии удалены.', 'success');
+                window.location.reload();
+            } catch (err) {
+                addLog(`Ошибка удаления данных сессии: ${err.message}`, 'error');
             }
         }
 
@@ -1032,12 +1059,31 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
         }
 
         function escapeHtml(str) {
-            return str
+            return String(str ?? '')
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
+        }
+
+        function safeImageUrl(url) {
+            const fallback = 'https://static.qobuz.com/images/covers/50.jpg';
+            try {
+                const parsed = new URL(url || fallback, window.location.href);
+                if (parsed.protocol !== 'https:') return fallback;
+                return parsed.href;
+            } catch {
+                return fallback;
+            }
+        }
+
+        function renderPlainMessage(container, className, text) {
+            container.innerHTML = '';
+            const message = document.createElement('p');
+            message.className = className;
+            message.textContent = text;
+            container.appendChild(message);
         }
 
         // Шаг 3: Вебсокет-поиск и сопоставление
@@ -1203,7 +1249,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                 matchedTracks.forEach((track, idx) => {
                     const card = document.createElement('div');
                     card.className = 'track-card glass-card-hover animate-fade-in';
-                    const coverImg = track.cover ? track.cover : 'https://static.qobuz.com/images/covers/50.jpg';
+                    const coverImg = safeImageUrl(track.cover);
                     card.innerHTML = `
                         <img src="${coverImg}" alt="${escapeHtml(track.album)}" class="track-cover">
                         <div class="track-card-info">
@@ -1315,7 +1361,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                 results.forEach(track => {
                     const row = document.createElement('div');
                     row.className = 'search-result-item glass-card-hover';
-                    const coverImg = track.cover ? track.cover : 'https://static.qobuz.com/images/covers/50.jpg';
+                    const coverImg = safeImageUrl(track.cover);
                     row.innerHTML = `
                         <img src="${coverImg}" alt="${escapeHtml(track.album)}" class="search-result-cover">
                         <div class="search-result-info">
@@ -1327,15 +1373,16 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                             <p class="search-result-album">${escapeHtml(track.album)}</p>
                             <span class="search-result-duration"><i class="fa-regular fa-clock"></i> ${formatDuration(track.duration)}</span>
                         </div>
-                        <button class="btn btn-secondary btn-xs select-match-btn" onclick="selectManualMatch(${JSON.stringify(track).replace(/"/g, '&quot;')})">
+                        <button class="btn btn-secondary btn-xs select-match-btn" type="button">
                             Выбрать <i class="fa-solid fa-check"></i>
                         </button>
                     `;
+                    row.querySelector('.select-match-btn').addEventListener('click', () => selectManualMatch(track));
                     list.appendChild(row);
                 });
             } catch (err) {
                 loader.classList.add('hidden');
-                list.innerHTML = `<p class="error-message">Ошибка: ${err.message}</p>`;
+                renderPlainMessage(list, 'error-message', `Ошибка: ${err.message}`);
                 addLog(`Ошибка ручного поиска: ${err.message}`, 'error');
             }
         }

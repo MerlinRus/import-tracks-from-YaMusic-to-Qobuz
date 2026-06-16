@@ -16,7 +16,7 @@ def clean_env(key, default=None):
 # Настройки Qobuz API
 # Пытаемся использовать App ID, который чаще всего работает с веб-токенами
 APP_ID = clean_env('QOBUZ_APP_ID') or '30650571'
-APP_SECRET = clean_env('QOBUZ_APP_SECRET') or '5929d2b8b9354226a0a73d327f918991'
+APP_SECRET = clean_env('QOBUZ_APP_SECRET') or ''
 AUTH_TOKEN = clean_env('QOBUZ_TOKEN')
 BASE_URL = "https://www.qobuz.com/api.json/0.2/"
 REQUEST_TIMEOUT = (5, 30)
