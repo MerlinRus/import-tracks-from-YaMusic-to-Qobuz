@@ -387,6 +387,14 @@ async def get_index(request: Request):
 async def get_css():
     return FileResponse("style.css", media_type="text/css")
 
+@app.get("/favicon.svg")
+async def get_favicon_svg():
+    return FileResponse("favicon.svg", media_type="image/svg+xml")
+
+@app.get("/favicon.ico")
+async def get_favicon_ico():
+    return FileResponse("favicon.svg", media_type="image/svg+xml")
+
 def get_yandex_profile(token: str = ""):
     if not token:
         return {"authorized": False}
