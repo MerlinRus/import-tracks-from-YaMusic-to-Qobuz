@@ -3,541 +3,342 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Qobuz Playlist Importer</title>
+    <title>QobuzSync</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <!-- Подключаем шрифты Google Outfit и Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;700;800&display=swap" rel="stylesheet">
-    <!-- Подключаем иконки FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Подключаем стили -->
     <link rel="stylesheet" href="/style.css">
-    <!-- Библиотека конфетти -->
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
 </head>
 <body>
     <div class="glass-bg"></div>
 
-    <div class="app-container">
+    <div class="app-container route-app">
         <header class="app-header">
             <div class="logo">
                 <i class="fa-solid fa-compact-disc spin-icon"></i>
                 <h1>Qobuz<span>Sync</span></h1>
             </div>
             <div class="header-right">
+                <div class="route-summary" id="routeSummary">Яндекс.Музыка → Qobuz</div>
                 <div class="theme-selector-container">
-                    <button class="btn-theme-toggle" id="themeToggleBtn" onclick="toggleThemeDropdown()" title="Выбрать тему">
+                    <button class="btn-theme-toggle" id="themeToggleBtn" title="Выбрать тему">
                         <i class="fa-solid fa-palette"></i>
                     </button>
                     <div class="theme-dropdown hidden" id="themeDropdown">
-                        <button onclick="setTheme('default')"><span class="theme-dot default"></span> Glassmorphism Dark</button>
-                        <button onclick="setTheme('cyberpunk')"><span class="theme-dot cyberpunk"></span> Cyberpunk 2077</button>
-                        <button onclick="setTheme('retro')"><span class="theme-dot retro"></span> Retro Synthwave</button>
-                        <button onclick="setTheme('forest')"><span class="theme-dot forest"></span> Nordic Forest</button>
+                        <button data-theme-choice="default"><span class="theme-dot default"></span> Glassmorphism Dark</button>
+                        <button data-theme-choice="cyberpunk"><span class="theme-dot cyberpunk"></span> Cyberpunk 2077</button>
+                        <button data-theme-choice="retro"><span class="theme-dot retro"></span> Retro Synthwave</button>
+                        <button data-theme-choice="forest"><span class="theme-dot forest"></span> Nordic Forest</button>
                     </div>
-                </div>
-                <div class="user-status-badge" id="userBadge">
-                    <span class="status-dot red" id="statusDot"></span>
-                    <span id="userStatusText">Не авторизован</span>
                 </div>
             </div>
         </header>
 
-        <!-- Главная сетка контента -->
-        <main class="app-main">
-            <!-- Боковая панель (Настройки) -->
-            <div class="sidebar-wrapper">
-                <section class="sidebar-card glass-card">
-                    <div class="card-header">
-                        <h2><i class="fa-solid fa-circle-user"></i> Qobuz</h2>
+        <main class="route-main">
+            <section class="route-panel glass-card">
+                <div class="route-columns">
+                    <div class="route-column">
+                        <div class="panel-kicker">Источник</div>
+                        <div class="service-chips" id="sourceChips"></div>
                     </div>
-                    <div class="card-body">
-                        <form id="qobuzLoginForm">
-                            <div class="input-group">
-                                <label for="qobuzEmailInput">Email Qobuz</label>
-                                <input type="email" id="qobuzEmailInput" placeholder="email@example.com" required autocomplete="username">
+                    <div class="route-arrow"><i class="fa-solid fa-arrow-right"></i></div>
+                    <div class="route-column">
+                        <div class="panel-kicker">Назначение</div>
+                        <div class="service-chips" id="destinationChips"></div>
+                    </div>
+                </div>
+                <div class="connection-row">
+                    <div class="connection-card" id="sourceConnection"></div>
+                    <div class="connection-card" id="destinationConnection"></div>
+                </div>
+            </section>
+
+            <section class="workflow-grid">
+                <div class="workflow-main">
+                    <section class="workflow-section glass-card">
+                        <div class="section-head">
+                            <div>
+                                <span class="step-pill">1</span>
+                                <h2>Загрузить треки</h2>
                             </div>
-
-                            <div class="input-group">
-                                <label for="qobuzPasswordInput">Пароль Qobuz</label>
-                                <div class="input-wrapper">
-                                    <input type="password" id="qobuzPasswordInput" placeholder="Пароль..." required autocomplete="current-password">
-                                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('qobuzPasswordInput')">
-                                        <i class="fa-solid fa-eye" id="qobuzPasswordInput-eye"></i>
-                                    </button>
-                                </div>
-                            </div>
-
-                            <button type="submit" class="btn btn-primary btn-block" id="qobuzLoginSubmitBtn">
-                                <i class="fa-solid fa-right-to-bracket"></i> Войти
-                            </button>
-                        </form>
-
-                        <details style="margin-top: 12px;">
-                            <summary style="cursor: pointer; color: var(--text-muted); font-size: 13px; user-select: none;">Расширенный вход</summary>
-                            <form id="configForm" style="margin-top: 12px;">
-                                <div class="input-group">
-                                    <label for="tokenInput">QOBUZ_TOKEN</label>
-                                    <div class="input-wrapper">
-                                        <input type="password" id="tokenInput" placeholder="Вставьте Qobuz token..." autocomplete="off">
-                                        <button type="button" class="toggle-password" onclick="togglePasswordVisibility('tokenInput')">
-                                            <i class="fa-solid fa-eye" id="tokenInput-eye"></i>
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div class="input-group">
-                                    <label for="appIdInput">APP_ID</label>
-                                    <input type="text" id="appIdInput" placeholder="30650571" required autocomplete="off">
-                                </div>
-
-                                <div class="input-group">
-                                    <label for="appSecretInput">APP_SECRET</label>
-                                    <div class="input-wrapper">
-                                        <input type="password" id="appSecretInput" placeholder="Секрет..." autocomplete="off">
-                                        <button type="button" class="toggle-password" onclick="togglePasswordVisibility('appSecretInput')">
-                                            <i class="fa-solid fa-eye" id="appSecretInput-eye"></i>
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <button type="submit" class="btn btn-secondary btn-block" id="saveConfigBtn">
-                                    <i class="fa-solid fa-floppy-disk"></i> Сохранить token
-                                </button>
-                            </form>
-                        </details>
-
-                        <div class="divider"></div>
-                        
-                        <button type="button" class="btn btn-primary btn-block" id="browserLoginBtn" style="box-shadow: 0 0 15px rgba(0, 242, 254, 0.15);">
-                            <i class="fa-solid fa-right-to-bracket"></i> Войти в Qobuz
-                        </button>
-
-                        <div class="profile-box hidden" id="profileBox">
-                            <div class="divider"></div>
-                            <div class="profile-info">
-                                <div class="profile-avatar">
-                                    <i class="fa-solid fa-user-astronaut"></i>
-                                </div>
-                                <div class="profile-meta">
-                                    <p class="profile-label">Аккаунт назначения</p>
-                                    <h3 class="profile-name" id="profileName">-</h3>
-                                    <p class="profile-id">ID: <span id="profileId">-</span></p>
-                                </div>
-                            </div>
-                            <div class="divider"></div>
-                            <button type="button" class="btn btn-secondary btn-block" id="qobuzLogoutBtn" style="border-color: rgba(255,255,255,0.08); color: var(--text-muted);">
-                                Выйти из Qobuz
-                            </button>
+                            <span class="badge" id="loadedBadge">0 треков</span>
                         </div>
-                        <div class="divider"></div>
-                        <button type="button" class="btn btn-secondary btn-block" id="deleteSessionBtn" style="border-color: rgba(239, 68, 68, 0.25); color: var(--color-danger);">
-                            Удалить данные сессии
-                        </button>
-                    </div>
-                </section>
 
-                <section class="sidebar-card glass-card">
-                    <div class="card-header">
-                        <h2><i class="fa-solid fa-music"></i> Яндекс.Музыка</h2>
-                    </div>
-                    <div class="card-body">
-                        <!-- Блок авторизации Яндекс.Музыки -->
-                        <div id="yandexUnauthBox">
-                            <p class="subtitle" style="font-size: 13px; margin-bottom: 16px;">Войдите, чтобы переносить приватные плейлисты и «Мне нравится».</p>
-                            <button type="button" class="btn btn-primary btn-block" id="yandexLoginBtn" style="background: linear-gradient(135deg, #ff3347 0%, #ff5c33 100%); border: none; box-shadow: 0 0 15px rgba(255, 51, 71, 0.15);">
-                                <i class="fa-solid fa-right-to-bracket"></i> Войти в аккаунт
-                            </button>
+                        <div class="source-mode-row" id="sourceModeRow">
+                            <button type="button" class="mode-btn active" data-input-mode="url">Ссылка</button>
+                            <button type="button" class="mode-btn" data-input-mode="liked">Мне нравится</button>
+                            <button type="button" class="mode-btn" data-input-mode="manual">Список</button>
                         </div>
-                        
-                        <div id="yandexAuthBox" class="hidden">
-                            <div class="profile-info">
-                                <div class="profile-avatar" style="background: rgba(255, 51, 71, 0.1); border-color: rgba(255, 51, 71, 0.2); width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px;">
-                                    <i class="fa-solid fa-compact-disc" style="color: #ff3347;"></i>
-                                </div>
-                                <div class="profile-meta">
-                                    <p class="profile-label">Яндекс.Музыка</p>
-                                    <h3 class="profile-name" id="yandexProfileName">-</h3>
-                                    <p class="profile-id">UID: <span id="yandexProfileId">-</span></p>
-                                </div>
-                            </div>
-                            <div class="divider"></div>
-                            
-                            <!-- Быстрый импорт Мне нравится -->
-                            <button type="button" class="btn btn-primary btn-block" id="yandexImportLikedBtn" style="margin-bottom: 12px; background: linear-gradient(135deg, #ff3347 0%, #ff5c33 100%); border: none; box-shadow: 0 0 10px rgba(255, 51, 71, 0.15);">
-                                <i class="fa-solid fa-heart"></i> Импорт «Мне нравится»
-                            </button>
-                            
-                            <button type="button" class="btn btn-secondary btn-block" id="yandexLogoutBtn" style="border-color: rgba(255,255,255,0.08); color: var(--text-muted);">
-                                Выйти из аккаунта
-                            </button>
-                        </div>
-                    </div>
-                </section>
-            </div>
 
-            <!-- Основная панель управления (Многошаговая форма) -->
-            <section class="main-card glass-card">
-                <!-- Шаг 1: Ввод списка треков -->
-                <div class="step-container active" id="step1">
-                    <div class="step-header">
-                        <div class="step-indicator">Шаг 1 из 3</div>
-                        <h2>Импорт треков</h2>
-                        <p class="subtitle">Вставьте список треков или перетащите текстовый файл</p>
-                    </div>
-
-                    <div class="step-body">
-                        <!-- Импорт по ссылке Яндекс.Музыки -->
-                        <div class="yandex-import-container">
-                            <label for="yandexUrlInput" class="yandex-label">
-                                <i class="fa-solid fa-link"></i> Импорт по ссылке Яндекс.Музыки
-                            </label>
-                            <div class="yandex-input-row">
-                                <input type="text" id="yandexUrlInput" placeholder="Ссылка на плейлист, альбом, трек, артиста или «Мне нравится»..." autocomplete="off">
-                                <button type="button" class="btn btn-primary" id="importYandexUrlBtn">
+                        <div class="source-pane" id="urlPane">
+                            <div class="input-line">
+                                <input type="text" id="sourceUrlInput" placeholder="Ссылка на плейлист, альбом, трек или артиста">
+                                <button type="button" class="btn btn-primary" id="loadUrlBtn">
                                     <i class="fa-solid fa-download"></i> Загрузить
                                 </button>
                             </div>
                         </div>
 
-                        <div class="text-separator">
-                            <span>или перетащите файл / вставьте список вручную</span>
+                        <div class="source-pane hidden" id="likedPane">
+                            <button type="button" class="btn btn-primary" id="loadLikedBtn">
+                                <i class="fa-solid fa-heart"></i> Загрузить «Мне нравится»
+                            </button>
                         </div>
 
-                        <!-- Зона Drag & Drop -->
-                        <div class="drag-drop-zone" id="dropZone">
-                            <i class="fa-solid fa-cloud-arrow-up cloud-icon"></i>
-                            <p>Перетащите <code>tracks.txt</code> сюда или</p>
-                            <label for="fileInput" class="btn btn-secondary btn-sm">Выберите файл</label>
-                            <input type="file" id="fileInput" accept=".txt" class="hidden">
+                        <div class="source-pane hidden" id="manualPane">
+                            <div class="drag-drop-zone compact" id="dropZone">
+                                <i class="fa-solid fa-file-arrow-up cloud-icon"></i>
+                                <p>Перетащите TXT-файл или выберите его</p>
+                                <label for="fileInput" class="btn btn-secondary btn-sm">Выбрать файл</label>
+                                <input type="file" id="fileInput" accept=".txt" class="hidden">
+                            </div>
+                            <textarea id="textInput" placeholder="OutKast - Ms. Jackson&#10;Tinlicker - Children&#10;MORGENSHTERN - Цветок" rows="7"></textarea>
+                            <button type="button" class="btn btn-primary" id="loadManualBtn">
+                                Загрузить список <i class="fa-solid fa-arrow-right"></i>
+                            </button>
                         </div>
+                    </section>
 
-                        <div class="text-separator">
-                            <span>или вставьте вручную</span>
+                    <section class="workflow-section glass-card" id="previewSection">
+                        <div class="section-head">
+                            <div>
+                                <span class="step-pill">2</span>
+                                <h2>Проверить список</h2>
+                            </div>
+                            <button type="button" class="btn btn-secondary btn-xs" id="addTrackBtn">
+                                <i class="fa-solid fa-plus"></i> Строка
+                            </button>
                         </div>
-
-                        <!-- Поле ввода текста -->
-                        <textarea id="textInput" placeholder="Например:
-OutKast - Ms. Jackson
-Tinlicker - Children
-MORGENSHTERN - Цветок" rows="8"></textarea>
-
-                        <button type="button" class="btn btn-primary" id="parseTracksBtn">
-                            Загрузить список <i class="fa-solid fa-arrow-right"></i>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Шаг 2: Предпросмотр и редактирование списка -->
-                <div class="step-container" id="step2">
-                    <div class="step-header">
-                        <div class="step-indicator">Шаг 2 из 3</div>
-                        <h2>Предпросмотр списка</h2>
-                        <p class="subtitle">Отредактируйте или удалите неточные названия перед началом поиска</p>
-                    </div>
-
-                    <div class="step-body flex-layout">
-                        <div class="tracks-list-container">
-                            <div class="list-actions">
-                                <span class="badge" id="parsedCountBadge">Загружено: 0 треков</span>
-                                <button class="btn btn-secondary btn-xs" id="addTrackRowBtn">
-                                    <i class="fa-plus"></i> Добавить строку
-                                </button>
-                            </div>
-                            <div class="tracks-table-wrapper">
-                                <table class="tracks-table">
-                                    <thead>
-                                        <tr>
-                                            <th style="width: 50px;">#</th>
-                                            <th>Название трека для поиска</th>
-                                            <th style="width: 80px; text-align: center;">Действие</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="tracksTableBody">
-                                        <!-- Строки треков добавятся динамически -->
-                                    </tbody>
-                                </table>
-                            </div>
+                        <div class="tracks-table-wrapper route-table">
+                            <table class="tracks-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 52px;">#</th>
+                                        <th>Трек для поиска</th>
+                                        <th style="width: 64px;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tracksTableBody"></tbody>
+                            </table>
                         </div>
-
-                        <!-- Настройки плейлиста -->
-                        <div class="playlist-config-box glass-card" style="margin-top: 20px; padding: 20px; border: 1px solid var(--glass-border); background: rgba(255, 255, 255, 0.01); border-radius: 8px;">
-                            <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; color: var(--color-primary);">
-                                <i class="fa-solid fa-gear"></i> Настройки импорта в Qobuz
-                            </h3>
-                            
-                            <!-- Выбор режима: новый или существующий -->
-                            <div class="playlist-mode-selector" style="display: flex; gap: 20px; margin-bottom: 16px;">
-                                <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-main); cursor: pointer; user-select: none;">
-                                    <input type="radio" name="playlistMode" value="new" checked onchange="togglePlaylistMode('new')" style="cursor: pointer; width: auto; margin: 0;">
-                                    Создать новый плейлист
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-main); cursor: pointer; user-select: none;">
-                                    <input type="radio" name="playlistMode" value="existing" onchange="togglePlaylistMode('existing')" style="cursor: pointer; width: auto; margin: 0;">
-                                    Добавить в существующий
-                                </label>
-                            </div>
-
-                            <!-- Поле для создания нового плейлиста -->
-                            <div class="input-group" id="playlistNewGroup" style="margin-bottom: 12px;">
-                                <label for="playlistNameInput" style="font-weight: 500; font-size: 13px; display: block; margin-bottom: 6px; color: var(--text-muted);">Название нового плейлиста</label>
-                                <input type="text" id="playlistNameInput" value="Импортировано из Яндекс.Музыки" placeholder="Введите название..." style="width: 100%; box-sizing: border-box; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--glass-border); color: var(--text-main); padding: 10px 12px; border-radius: 6px; font-size: 14px;">
-                            </div>
-
-                            <!-- Поле для выбора существующего плейлиста -->
-                            <div class="input-group hidden" id="playlistExistingGroup" style="margin-bottom: 12px;">
-                                <label for="playlistSelect" style="font-weight: 500; font-size: 13px; display: block; margin-bottom: 6px; color: var(--text-muted);">Выберите существующий плейлист</label>
-                                <div style="display: flex; gap: 10px; align-items: center;">
-                                    <select id="playlistSelect" style="flex: 1; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--glass-border); color: var(--text-main); padding: 10px 12px; border-radius: 6px; font-size: 14px; cursor: pointer; outline: none; height: 38px;">
-                                        <option value="">Загрузка плейлистов...</option>
-                                    </select>
-                                    <button type="button" class="btn btn-secondary" onclick="loadQobuzPlaylists()" title="Обновить список плейлистов" style="padding: 0 12px; height: 38px; min-width: auto; margin: 0;">
-                                        <i class="fa-solid fa-arrows-rotate"></i>
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div class="input-group" style="margin-top: 12px; margin-bottom: 0;">
-                                <label for="playlistOrderSelect" style="font-weight: 500; font-size: 13px; display: block; margin-bottom: 6px; color: var(--text-muted);">Порядок добавления треков</label>
-                                <select id="playlistOrderSelect" style="width: 100%; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--glass-border); color: var(--text-main); padding: 10px 12px; border-radius: 6px; font-size: 14px; cursor: pointer; outline: none; height: 38px;">
-                                    <option value="normal">Сверху вниз (как в источнике)</option>
-                                    <option value="reverse">Снизу вверх (в обратном порядке)</option>
-                                </select>
-                            </div>
-                        </div>
-
                         <div class="button-footer">
-                            <button class="btn btn-secondary" onclick="goToStep(1)">
-                                <i class="fa-solid fa-arrow-left"></i> Назад
-                            </button>
-                            <button class="btn btn-primary" id="startMatchingBtn">
-                                Начать сопоставление <i class="fa-solid fa-wand-magic-sparkles"></i>
+                            <button type="button" class="btn btn-primary" id="matchBtn">
+                                Найти в сервисе назначения <i class="fa-solid fa-magnifying-glass"></i>
                             </button>
                         </div>
-                    </div>
-                </div>
+                    </section>
 
-                <!-- Шаг 3: Процесс сопоставления и ручной выбор -->
-                <div class="step-container" id="step3">
-                    <div class="step-header">
-                        <div class="step-indicator">Шаг 3 из 3</div>
-                        <h2>Сопоставление треков</h2>
-                        <p class="subtitle" id="matchingSub">Ищем ваши треки в музыкальной базе Qobuz</p>
-                    </div>
-
-                    <div class="step-body flex-layout">
-                        <!-- Панель статуса и прогресс -->
-                        <div class="matching-status-panel">
-                            <div class="progress-info">
-                                <span class="progress-percentage" id="progressPercent">0%</span>
-                                <span class="progress-stats" id="progressStats">Сопоставлено: 0 / 0</span>
+                    <section class="workflow-section glass-card" id="matchSection">
+                        <div class="section-head">
+                            <div>
+                                <span class="step-pill">3</span>
+                                <h2>Совпадения</h2>
                             </div>
-                            <div class="progress-bar-container">
-                                <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+                            <div class="match-stats">
+                                <span id="matchedCount">0 найдено</span>
+                                <span id="unmatchedCount">0 не найдено</span>
                             </div>
                         </div>
-
-                        <!-- Вкладки результатов -->
+                        <div class="progress-container">
+                            <div class="progress-bar" id="progressBar" style="width: 0%;"></div>
+                        </div>
                         <div class="results-tabs">
-                            <button class="tab-btn active" id="tabFoundBtn" onclick="switchTab('found')">
-                                Найдено <span class="tab-badge green" id="badgeFound">0</span>
-                            </button>
-                            <button class="tab-btn" id="tabNotFoundBtn" onclick="switchTab('notfound')">
-                                Не найдено <span class="tab-badge red" id="badgeNotFound">0</span>
-                            </button>
+                            <button type="button" class="tab-btn active" id="foundTabBtn">Найдено</button>
+                            <button type="button" class="tab-btn" id="notFoundTabBtn">Не найдено</button>
                         </div>
+                        <div class="tab-content active" id="foundTab"></div>
+                        <div class="tab-content" id="notFoundTab"></div>
+                    </section>
 
-                        <!-- Содержимое вкладок -->
-                        <div class="tab-content active" id="tabFoundContent">
-                            <div class="cards-grid" id="foundGrid">
-                                <!-- Найденные треки -->
+                    <section class="workflow-section glass-card" id="transferSection">
+                        <div class="section-head">
+                            <div>
+                                <span class="step-pill">4</span>
+                                <h2>Перенести</h2>
                             </div>
+                            <span class="badge" id="readyBadge">0 готово</span>
                         </div>
-
-                        <div class="tab-content" id="tabNotFoundContent">
-                            <div class="list-unmatched" id="notFoundList">
-                                <!-- Ненайденные треки -->
-                            </div>
+                        <div class="playlist-mode-selector route-mode">
+                            <label>
+                                <input type="radio" name="playlistMode" value="new" checked>
+                                Создать новый
+                            </label>
+                            <label>
+                                <input type="radio" name="playlistMode" value="existing">
+                                Добавить в существующий
+                            </label>
                         </div>
-
-                        <!-- Создание плейлиста -->
-                        <div class="playlist-create-section hidden" id="playlistSection">
-                            <div class="divider"></div>
-                            <div class="playlist-form" style="text-align: center;">
-                                <button class="btn btn-primary btn-lg" id="createPlaylistBtn" style="padding: 12px 36px; font-size: 16px;">
-                                    Создать плейлист и импортировать в Qobuz <i class="fa-solid fa-cloud-arrow-down"></i>
+                        <div class="input-group" id="newPlaylistGroup">
+                            <label for="playlistNameInput">Название плейлиста</label>
+                            <input type="text" id="playlistNameInput" value="Импортировано через QobuzSync">
+                        </div>
+                        <div class="input-group hidden" id="existingPlaylistGroup">
+                            <label for="playlistSelect">Плейлист назначения</label>
+                            <div class="input-line">
+                                <select id="playlistSelect"></select>
+                                <button type="button" class="btn btn-secondary" id="refreshPlaylistsBtn" title="Обновить">
+                                    <i class="fa-solid fa-rotate"></i>
                                 </button>
                             </div>
                         </div>
-
-                        <!-- Завершение импорта -->
-                        <div class="success-screen hidden" id="successScreen">
-                            <div class="success-icon-wrapper animate-bounce">
-                                <i class="fa-solid fa-circle-check"></i>
-                            </div>
-                            <h2>Плейлист успешно создан!</h2>
-                            <p id="successMessage">Добавлено 0 треков в Qobuz.</p>
-                            <button class="btn btn-primary" onclick="goToStep(1)">Импортировать еще</button>
+                        <div class="input-group">
+                            <label for="playlistOrderSelect">Порядок добавления</label>
+                            <select id="playlistOrderSelect">
+                                <option value="original">Как в источнике</option>
+                                <option value="reverse">В обратном порядке</option>
+                            </select>
                         </div>
-                    </div>
+                        <button type="button" class="btn btn-primary btn-block" id="transferBtn">
+                            Перенести треки <i class="fa-solid fa-cloud-arrow-up"></i>
+                        </button>
+                    </section>
                 </div>
+
+                <aside class="workflow-side">
+                    <section class="glass-card compact-panel">
+                        <div class="panel-kicker">Маршрут</div>
+                        <div class="route-map">
+                            <div>
+                                <span id="mapSource">Яндекс.Музыка</span>
+                                <small>источник</small>
+                            </div>
+                            <i class="fa-solid fa-arrow-down"></i>
+                            <div>
+                                <span id="mapDestination">Qobuz</span>
+                                <small>назначение</small>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="logs-card glass-card collapsed" id="logsCard">
+                        <div class="logs-header" id="logsHeader">
+                            <h3><i class="fa-solid fa-terminal"></i> Логи</h3>
+                            <span class="toggle-icon"><i class="fa-solid fa-chevron-up" id="logsChevron"></i></span>
+                        </div>
+                        <div class="logs-body" id="logsContainer">
+                            <div class="log-line system">Готов к переносу.</div>
+                        </div>
+                    </section>
+                </aside>
             </section>
         </main>
-
-        <!-- Collapsible Технический лог -->
-        <footer class="app-footer">
-            <div class="logs-card glass-card collapsed" id="logsCard">
-                <div class="logs-header" onclick="toggleLogs()">
-                    <h3><i class="fa-solid fa-terminal"></i> Логи консоли бэкенда</h3>
-                    <span class="toggle-icon"><i class="fa-solid fa-chevron-up" id="logsChevron"></i></span>
-                </div>
-                <div class="logs-body" id="logsContainer">
-                    <div class="log-line system">Логи сервиса будут отображаться здесь...</div>
-                </div>
-            </div>
-        </footer>
     </div>
 
-    <!-- Модальное окно ручного поиска альтернативы -->
     <div class="modal-overlay hidden" id="searchModal">
         <div class="modal-card glass-card">
             <div class="modal-header">
-                <h3><i class="fa-solid fa-magnifying-glass"></i> Ручной поиск альтернативы</h3>
-                <button class="modal-close" onclick="closeSearchModal()">&times;</button>
+                <h3><i class="fa-solid fa-magnifying-glass"></i> Ручной поиск</h3>
+                <button class="modal-close" id="closeSearchModalBtn">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="search-box">
-                    <input type="text" id="manualSearchInput" placeholder="Введите название исполнителя и трека...">
+                    <input type="text" id="manualSearchInput" placeholder="Исполнитель и название трека">
                     <button class="btn btn-primary" id="manualSearchBtn">Найти</button>
                 </div>
                 <div class="search-loader hidden" id="searchLoader">
-                    <i class="fa-solid fa-circle-notch fa-spin"></i> Ищем результаты...
+                    <i class="fa-solid fa-circle-notch fa-spin"></i> Поиск...
                 </div>
-                <div class="search-results-list" id="searchResultsList">
-                    <!-- Результаты ручного поиска -->
-                </div>
+                <div class="search-results-list" id="searchResultsList"></div>
             </div>
         </div>
     </div>
 
-    <!-- Модальное окно авторизации Яндекс.Музыки -->
     <div class="modal-overlay hidden" id="yandexAuthModal">
         <div class="modal-card glass-card" style="max-width: 450px;">
             <div class="modal-header">
                 <h3><i class="fa-solid fa-music"></i> Подключение Яндекс.Музыки</h3>
-                <button class="modal-close" onclick="closeYandexAuthModal()">&times;</button>
+                <button class="modal-close" id="closeYandexModalBtn">&times;</button>
             </div>
-            <div class="modal-body" style="text-align: center; padding: 20px 24px; display: flex; flex-direction: column; gap: 20px;">
-                <div class="yandex-logo-circle" style="width: 70px; height: 70px; border-radius: 50%; background: rgba(255, 51, 71, 0.1); margin: 0 auto; display: flex; align-items: center; justify-content: center; font-size: 32px; color: #ff3347;">
-                    <i class="fa-solid fa-key animate-pulse"></i>
+            <div class="modal-body yandex-auth-body">
+                <div class="yandex-logo-circle">
+                    <i class="fa-solid fa-key"></i>
                 </div>
-                
-                <div id="yandexAuthStep1">
-                    <p style="font-size: 15px; line-height: 1.5; color: var(--text-main);">Для авторизации откройте страницу активации Yandex:</p>
-                    <a href="https://yandex.ru/activate" target="_blank" class="btn btn-secondary btn-block" style="margin: 15px 0; border-color: #ff3347; color: #ff3347; display: flex; align-items: center; justify-content: center; gap: 8px;" id="yandexActivateLink">
-                        <i class="fa-solid fa-external-link"></i> yandex.ru/activate
-                    </a>
-                    <p style="font-size: 15px; margin-bottom: 8px; color: var(--text-main);">И введите следующий код подтверждения:</p>
-                    <div class="yandex-code-display" id="yandexCodeDisplay" style="background: rgba(0, 0, 0, 0.3); border: 1px solid var(--glass-border); padding: 12px; font-size: 24px; font-weight: 700; border-radius: 8px; color: var(--color-primary); letter-spacing: 2px;">
-                        -----
-                    </div>
-                </div>
-                
-                <div class="yandex-auth-waiting" style="font-size: 13px; color: var(--text-muted); display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 10px;">
-                    <i class="fa-solid fa-circle-notch fa-spin" style="color: var(--color-primary);"></i>
-                    <span>Ожидание авторизации от Яндекс...</span>
+                <p>Откройте страницу активации Yandex и введите код:</p>
+                <a href="https://yandex.ru/activate" target="_blank" class="btn btn-secondary btn-block" id="yandexActivateLink">
+                    <i class="fa-solid fa-external-link"></i> yandex.ru/activate
+                </a>
+                <div class="yandex-code-display" id="yandexCodeDisplay">Загрузка...</div>
+                <div class="yandex-auth-waiting">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i> Ожидание авторизации
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- JavaScript логика -->
     <script>
+        const API_BASE = '/api';
+        const MAX_LOG_LINES = 120;
+
+        let services = [];
+        let connections = {};
+        let selectedSource = 'yandex';
+        let selectedDestination = 'qobuz';
+        let selectedInputMode = 'url';
         let parsedTracks = [];
         let matchedTracks = [];
         let unmatchedTracks = [];
-        let currentlyEditingUnmatchedIdx = null; // Индекс трека из unmatchedTracks, для которого ищем альтернативу
-        let resultsUiUpdateTimer = null;
-        let hasSavedQobuzToken = false;
-        const RESULTS_UI_UPDATE_DELAY_MS = 200;
-        const MAX_LOG_LINES = 300;
+        let editingUnmatchedIndex = null;
+        let yandexWs = null;
 
-        // API URL
-        const API_BASE = '/api';
-        let wsConn = null;
-
-        // Инициализация при загрузке страницы
         document.addEventListener('DOMContentLoaded', () => {
-            fetchConfig();
-            setupDragAndDrop();
-
-            // Элементы
-            document.getElementById('qobuzLoginForm').addEventListener('submit', loginQobuz);
-            document.getElementById('configForm').addEventListener('submit', saveConfig);
-            document.getElementById('browserLoginBtn').addEventListener('click', triggerBrowserLogin);
-            document.getElementById('qobuzLogoutBtn').addEventListener('click', logoutQobuz);
-            document.getElementById('deleteSessionBtn').addEventListener('click', deleteSessionData);
-            document.getElementById('yandexLoginBtn').addEventListener('click', openYandexAuthModal);
-            document.getElementById('yandexLogoutBtn').addEventListener('click', logoutYandex);
-            document.getElementById('yandexImportLikedBtn').addEventListener('click', importYandexLiked);
-            document.getElementById('importYandexUrlBtn').addEventListener('click', importFromYandexUrl);
-            document.getElementById('yandexUrlInput').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') importFromYandexUrl();
-            });
-            document.getElementById('parseTracksBtn').addEventListener('click', parseInput);
-            document.getElementById('addTrackRowBtn').addEventListener('click', addTrackRow);
-            document.getElementById('startMatchingBtn').addEventListener('click', startMatching);
-            document.getElementById('createPlaylistBtn').addEventListener('click', createPlaylistAndImport);
-            document.getElementById('manualSearchBtn').addEventListener('click', triggerManualSearch);
-            document.getElementById('manualSearchInput').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') triggerManualSearch();
-            });
-
-            // Настройка input file
-            document.getElementById('fileInput').addEventListener('change', (e) => {
-                if (e.target.files.length > 0) {
-                    uploadFile(e.target.files[0]);
-                }
-            });
+            bindStaticEvents();
+            applySavedTheme();
+            loadBootstrap();
         });
 
-        // Показать/скрыть пароли
-        function togglePasswordVisibility(inputId) {
-            const input = document.getElementById(inputId);
-            const eye = document.getElementById(inputId + '-eye');
-            if (input.type === 'password') {
-                input.type = 'text';
-                eye.classList.remove('fa-eye');
-                eye.classList.add('fa-eye-slash');
-            } else {
-                input.type = 'password';
-                eye.classList.remove('fa-eye-slash');
-                eye.classList.add('fa-eye');
+        function bindStaticEvents() {
+            document.getElementById('themeToggleBtn').addEventListener('click', toggleThemeDropdown);
+            document.querySelectorAll('[data-theme-choice]').forEach(btn => {
+                btn.addEventListener('click', () => setTheme(btn.dataset.themeChoice));
+            });
+            document.getElementById('logsHeader').addEventListener('click', toggleLogs);
+            document.querySelectorAll('[data-input-mode]').forEach(btn => {
+                btn.addEventListener('click', () => setInputMode(btn.dataset.inputMode));
+            });
+            document.getElementById('loadUrlBtn').addEventListener('click', loadFromUrl);
+            document.getElementById('loadLikedBtn').addEventListener('click', loadLikedTracks);
+            document.getElementById('loadManualBtn').addEventListener('click', loadManualTracks);
+            document.getElementById('addTrackBtn').addEventListener('click', addTrackRow);
+            document.getElementById('matchBtn').addEventListener('click', startMatching);
+            document.getElementById('transferBtn').addEventListener('click', transferTracks);
+            document.getElementById('refreshPlaylistsBtn').addEventListener('click', loadDestinationPlaylists);
+            document.getElementById('foundTabBtn').addEventListener('click', () => switchResultsTab('found'));
+            document.getElementById('notFoundTabBtn').addEventListener('click', () => switchResultsTab('notFound'));
+            document.getElementById('manualSearchBtn').addEventListener('click', runManualSearch);
+            document.getElementById('manualSearchInput').addEventListener('keydown', event => {
+                if (event.key === 'Enter') runManualSearch();
+            });
+            document.getElementById('closeSearchModalBtn').addEventListener('click', closeSearchModal);
+            document.getElementById('closeYandexModalBtn').addEventListener('click', closeYandexAuthModal);
+            document.querySelectorAll('input[name="playlistMode"]').forEach(input => {
+                input.addEventListener('change', renderPlaylistMode);
+            });
+            document.getElementById('fileInput').addEventListener('change', handleFileSelect);
+            setupDropZone();
+        }
+
+        async function loadBootstrap() {
+            try {
+                const [servicesData, connectionsData] = await Promise.all([
+                    api('/services'),
+                    api('/connections')
+                ]);
+                services = servicesData.services || [];
+                connections = connectionsData.connections || {};
+                renderAll();
+                addLog('Конфигурация сервисов загружена.', 'success');
+            } catch (err) {
+                addLog(`Ошибка загрузки конфигурации: ${err.message}`, 'error');
             }
         }
 
-        // Логирование в веб-консоль
-        function addLog(text, type = 'info') {
-            const container = document.getElementById('logsContainer');
-            const line = document.createElement('div');
-            line.className = `log-line ${type}`;
-            const time = new Date().toLocaleTimeString();
-            const timeNode = document.createElement('span');
-            timeNode.className = 'log-time';
-            timeNode.textContent = `[${time}]`;
-            line.append(timeNode, ` ${text}`);
-            container.appendChild(line);
-            while (container.children.length > MAX_LOG_LINES) {
-                container.removeChild(container.firstElementChild);
-            }
-            container.scrollTop = container.scrollHeight;
-        }
-
-        async function readApiResponse(res) {
+        async function api(path, options = {}) {
+            const res = await fetch(`${API_BASE}${path}`, options);
             const text = await res.text();
             let data = {};
-
             if (text) {
                 try {
                     data = JSON.parse(text);
@@ -545,325 +346,623 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                     data = { detail: text.trim() };
                 }
             }
-
             if (!res.ok) {
                 throw new Error(data.detail || data.message || `HTTP ${res.status}`);
             }
-
             return data;
         }
 
-        // Свернуть/развернуть панель логов
-        function toggleLogs() {
-            const card = document.getElementById('logsCard');
-            const chevron = document.getElementById('logsChevron');
-            card.classList.toggle('collapsed');
-            if (card.classList.contains('collapsed')) {
-                chevron.classList.remove('fa-chevron-down');
-                chevron.classList.add('fa-chevron-up');
-            } else {
-                chevron.classList.remove('fa-chevron-up');
-                chevron.classList.add('fa-chevron-down');
-            }
+        function renderAll() {
+            renderServiceChips();
+            renderRoute();
+            renderConnections();
+            renderInputMode();
+            renderTracksTable();
+            renderResults();
+            renderPlaylistMode();
         }
 
-        // Получить текущие настройки API
-        async function fetchConfig() {
-            try {
-                addLog('Запрос конфигурации API...');
-                const res = await fetch(`${API_BASE}/config`);
-                const data = await readApiResponse(res);
-                
-                hasSavedQobuzToken = Boolean(data.has_qobuz_token);
-                document.getElementById('tokenInput').value = '';
-                document.getElementById('tokenInput').placeholder = hasSavedQobuzToken
-                    ? 'Токен сохранен в этой сессии. Вставьте новый, чтобы заменить.'
-                    : 'Вставьте Qobuz token...';
-                document.getElementById('appIdInput').value = data.app_id || '30650571';
-                document.getElementById('appSecretInput').value = '';
-                document.getElementById('appSecretInput').placeholder = 'Оставьте пустым, чтобы использовать серверный секрет';
-                document.getElementById('browserLoginBtn').classList.toggle('hidden', data.browser_login_enabled === false);
-
-                updateAuthIndicator(data.profile);
-                updateYandexAuthIndicator(data.yandex_profile);
-            } catch (err) {
-                addLog(`Ошибка при загрузке конфигурации: ${err.message}`, 'error');
-            }
-        }
-
-        // Обновление статуса авторизации
-        function updateAuthIndicator(profile) {
-            const badge = document.getElementById('userBadge');
-            const dot = document.getElementById('statusDot');
-            const statusText = document.getElementById('userStatusText');
-            const profileBox = document.getElementById('profileBox');
-
-            if (profile && profile.authorized) {
-                dot.className = 'status-dot green';
-                statusText.innerText = 'Подключено к Qobuz';
-                
-                document.getElementById('profileName').innerText = profile.display_name;
-                document.getElementById('profileId').innerText = profile.id;
-                profileBox.classList.remove('hidden');
-                addLog(`Авторизован как: ${profile.display_name} (ID: ${profile.id})`, 'success');
-            } else {
-                dot.className = 'status-dot red';
-                statusText.innerText = 'Не авторизован';
-                profileBox.classList.add('hidden');
-                addLog('Учетные данные Qobuz не авторизованы.', 'warning');
-            }
-        }
-
-        // Сохранить настройки
-        async function loginQobuz(e) {
-            e.preventDefault();
-            const email = document.getElementById('qobuzEmailInput').value.trim();
-            const password = document.getElementById('qobuzPasswordInput').value;
-            const appId = document.getElementById('appIdInput').value.trim();
-            const appSecret = document.getElementById('appSecretInput').value.trim();
-
-            const loginBtn = document.getElementById('qobuzLoginSubmitBtn');
-            loginBtn.disabled = true;
-            loginBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Входим...';
-
-            try {
-                addLog('Вход в Qobuz...');
-                const res = await fetch(`${API_BASE}/auth/qobuz-login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, password, app_id: appId, app_secret: appSecret })
-                });
-                const data = await readApiResponse(res);
-
-                hasSavedQobuzToken = true;
-                document.getElementById('qobuzPasswordInput').value = '';
-                document.getElementById('tokenInput').value = '';
-                document.getElementById('tokenInput').placeholder = 'Токен сохранен в этой сессии. Вставьте новый, чтобы заменить.';
-                updateAuthIndicator(data.profile);
-                addLog('Qobuz подключен.', 'success');
-            } catch (err) {
-                addLog(`Ошибка входа в Qobuz: ${err.message}`, 'error');
-                updateAuthIndicator({ authorized: false });
-            } finally {
-                loginBtn.disabled = false;
-                loginBtn.innerHTML = '<i class="fa-solid fa-right-to-bracket"></i> Войти';
-            }
-        }
-
-        async function saveConfig(e) {
-            e.preventDefault();
-            const token = document.getElementById('tokenInput').value.trim();
-            const appId = document.getElementById('appIdInput').value.trim();
-            const appSecret = document.getElementById('appSecretInput').value.trim();
-
-            const saveBtn = document.getElementById('saveConfigBtn');
-            saveBtn.disabled = true;
-            saveBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Сохраняем...';
-
-            try {
-                addLog('Сохранение настроек в вашей сессии...');
-                const res = await fetch(`${API_BASE}/config`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token, app_id: appId, app_secret: appSecret })
-                });
-                const data = await readApiResponse(res);
-                
-                if (data.status === 'success') {
-                    hasSavedQobuzToken = token.length > 0 || hasSavedQobuzToken;
-                    document.getElementById('tokenInput').value = '';
-                    updateAuthIndicator(data.profile);
-                    addLog('Настройки успешно обновлены!', 'success');
-                } else {
-                    throw new Error(data.detail || 'Неизвестная ошибка');
-                }
-            } catch (err) {
-                addLog(`Ошибка сохранения настроек: ${err.message}`, 'error');
-                updateAuthIndicator({ authorized: false });
-            } finally {
-                saveBtn.disabled = false;
-                saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Сохранить настройки';
-            }
-        }
-
-        async function logoutQobuz() {
-            try {
-                const res = await fetch(`${API_BASE}/auth/qobuz-logout`, { method: 'POST' });
-                await readApiResponse(res);
-                hasSavedQobuzToken = false;
-                document.getElementById('tokenInput').value = '';
-                document.getElementById('tokenInput').placeholder = 'Вставьте Qobuz token...';
-                updateAuthIndicator({ authorized: false });
-                addLog('Qobuz отключен для этой сессии.', 'success');
-            } catch (err) {
-                addLog(`Ошибка выхода из Qobuz: ${err.message}`, 'error');
-            }
-        }
-
-        async function deleteSessionData() {
-            if (!confirm('Удалить сохраненные Qobuz/Yandex токены этой сессии?')) {
-                return;
-            }
-            try {
-                const res = await fetch(`${API_BASE}/session/delete`, { method: 'POST' });
-                await readApiResponse(res);
-                hasSavedQobuzToken = false;
-                parsedTracks = [];
+        function renderServiceChips() {
+            renderChipGroup('sourceChips', 'source', selectedSource, value => {
+                selectedSource = value;
+                if (selectedSource === 'manual') selectedInputMode = 'manual';
+                if (selectedSource === 'yandex' && selectedInputMode === 'manual') selectedInputMode = 'url';
+                renderAll();
+            });
+            renderChipGroup('destinationChips', 'destination', selectedDestination, value => {
+                selectedDestination = value;
                 matchedTracks = [];
                 unmatchedTracks = [];
-                document.getElementById('tokenInput').value = '';
-                document.getElementById('tokenInput').placeholder = 'Вставьте Qobuz token...';
-                updateAuthIndicator({ authorized: false });
-                updateYandexAuthIndicator({ authorized: false });
-                addLog('Данные текущей сессии удалены.', 'success');
-                window.location.reload();
-            } catch (err) {
-                addLog(`Ошибка удаления данных сессии: ${err.message}`, 'error');
-            }
-        }
-
-        // Автоматическая авторизация через браузер
-        async function triggerBrowserLogin() {
-            const btn = document.getElementById('browserLoginBtn');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Окно входа открыто...';
-            
-            addLog('Запуск автоматической авторизации. Открывается окно браузера на вашем ПК...', 'system');
-            addLog('Пожалуйста, войдите в свой аккаунт Qobuz в открывшемся окне и при необходимости решите капчу.', 'warning');
-            
-            try {
-                const res = await fetch(`${API_BASE}/auth/browser-login`, {
-                    method: 'POST'
-                });
-                const data = await readApiResponse(res);
-                hasSavedQobuzToken = true;
-                document.getElementById('tokenInput').value = '';
-                document.getElementById('tokenInput').placeholder = 'Токен сохранен в этой сессии. Вставьте новый, чтобы заменить.';
-                document.getElementById('appIdInput').value = data.profile.app_id || '30650571';
-                updateAuthIndicator(data.profile);
-                addLog('Автоматическая авторизация выполнена успешно!', 'success');
-            } catch (err) {
-                addLog(`Ошибка авторизации через браузер: ${err.message}`, 'error');
-                alert(`Не удалось выполнить вход: ${err.message}`);
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-globe"></i> Войти через браузер';
-            }
-        }
-
-        // Переключение шагов интерфейса
-        function goToStep(stepNum) {
-            document.querySelectorAll('.step-container').forEach(el => el.classList.remove('active'));
-            document.getElementById(`step${stepNum}`).classList.add('active');
-            addLog(`Переход на Шаг ${stepNum}`);
-        }
-
-        // Drag & Drop
-        function setupDragAndDrop() {
-            const dropZone = document.getElementById('dropZone');
-            
-            ['dragenter', 'dragover'].forEach(eventName => {
-                dropZone.addEventListener(eventName, (e) => {
-                    e.preventDefault();
-                    dropZone.classList.add('highlight');
-                }, false);
-            });
-
-            ['dragleave', 'drop'].forEach(eventName => {
-                dropZone.addEventListener(eventName, (e) => {
-                    e.preventDefault();
-                    dropZone.classList.remove('highlight');
-                }, false);
-            });
-
-            dropZone.addEventListener('drop', (e) => {
-                const dt = e.dataTransfer;
-                const files = dt.files;
-                if (files.length > 0) {
-                    uploadFile(files[0]);
-                }
+                renderAll();
             });
         }
 
-        // Загрузка файла
-        function uploadFile(file) {
-            if (file.type !== "text/plain" && !file.name.endsWith('.txt')) {
-                addLog('Пожалуйста, загрузите только текстовый файл (.txt)', 'warning');
+        function renderChipGroup(containerId, role, selected, onSelect) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+            services.filter(service => service.roles.includes(role)).forEach(service => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = `service-chip ${selected === service.id ? 'active' : ''}`;
+                button.disabled = !service.enabled;
+                button.title = service.note || service.name;
+                button.innerHTML = `<span>${escapeHtml(service.short_name || service.name)}</span>${!service.enabled ? '<small>скоро</small>' : ''}`;
+                button.addEventListener('click', () => onSelect(service.id));
+                container.appendChild(button);
+            });
+        }
+
+        function renderRoute() {
+            const source = serviceById(selectedSource);
+            const destination = serviceById(selectedDestination);
+            const routeText = `${source?.name || selectedSource} → ${destination?.name || selectedDestination}`;
+            document.getElementById('routeSummary').textContent = routeText;
+            document.getElementById('mapSource').textContent = source?.name || selectedSource;
+            document.getElementById('mapDestination').textContent = destination?.name || selectedDestination;
+        }
+
+        function renderConnections() {
+            renderConnectionCard('sourceConnection', selectedSource, 'source');
+            renderConnectionCard('destinationConnection', selectedDestination, 'destination');
+        }
+
+        function renderConnectionCard(containerId, serviceId, role) {
+            const container = document.getElementById(containerId);
+            const service = serviceById(serviceId);
+            const connection = connections[serviceId] || {};
+            container.innerHTML = '';
+
+            const title = document.createElement('div');
+            title.className = 'connection-title';
+            title.innerHTML = `<span>${escapeHtml(service?.name || serviceId)}</span>`;
+            const status = document.createElement('span');
+            status.className = `status-pill ${connection.authorized ? 'ok' : 'muted'}`;
+            status.textContent = connection.authorized ? 'подключен' : (service?.auth_required ? 'нужен вход' : 'без входа');
+            title.appendChild(status);
+            container.appendChild(title);
+
+            if (!service?.enabled) {
+                container.appendChild(messageNode(service?.note || 'Сервис пока недоступен.'));
                 return;
             }
-            addLog(`Файл '${file.name}' выбран. Парсинг...`);
-            const formData = new FormData();
-            formData.append('file', file);
 
-            parseAPI(formData);
-        }
+            if (connection.authorized) {
+                const profile = document.createElement('div');
+                profile.className = 'connected-profile';
+                profile.textContent = connection.display_name ? `${connection.display_name}${connection.id ? ` · ${connection.id}` : ''}` : 'Аккаунт подключен';
+                container.appendChild(profile);
+                if (serviceId !== 'manual') {
+                    const disconnectBtn = smallButton('Отключить', 'fa-solid fa-right-from-bracket');
+                    disconnectBtn.addEventListener('click', () => disconnectService(serviceId));
+                    container.appendChild(disconnectBtn);
+                }
+                return;
+            }
 
-        // Обновление статуса авторизации Яндекс.Музыки
-        function updateYandexAuthIndicator(profile) {
-            const unauthBox = document.getElementById('yandexUnauthBox');
-            const authBox = document.getElementById('yandexAuthBox');
-            
-            if (profile && profile.authorized) {
-                unauthBox.classList.add('hidden');
-                authBox.classList.remove('hidden');
-                document.getElementById('yandexProfileName').innerText = profile.display_name;
-                document.getElementById('yandexProfileId').innerText = profile.uid;
-                addLog(`Подключено к Яндекс.Музыке: ${profile.display_name} (UID: ${profile.uid})`, 'success');
+            if (serviceId === 'qobuz') {
+                container.appendChild(renderQobuzLoginForm());
+            } else if (serviceId === 'spotify') {
+                const btn = primaryButton('Подключить Spotify', 'fa-brands fa-spotify');
+                btn.addEventListener('click', connectSpotify);
+                container.appendChild(btn);
+            } else if (serviceId === 'yandex') {
+                container.appendChild(messageNode('Публичные ссылки можно загружать без входа. Для «Мне нравится» подключите аккаунт.'));
+                const btn = primaryButton('Подключить Яндекс', 'fa-solid fa-key');
+                btn.addEventListener('click', openYandexAuthModal);
+                container.appendChild(btn);
             } else {
-                unauthBox.classList.remove('hidden');
-                authBox.classList.add('hidden');
+                container.appendChild(messageNode(service?.note || 'Подключение не требуется.'));
             }
         }
 
-        let yandexWs = null;
+        function renderQobuzLoginForm() {
+            const wrap = document.createElement('div');
+            wrap.className = 'compact-login';
+            wrap.innerHTML = `
+                <input type="email" id="qobuzEmailInput" placeholder="email@example.com" autocomplete="username">
+                <input type="password" id="qobuzPasswordInput" placeholder="Пароль Qobuz" autocomplete="current-password">
+                <button type="button" class="btn btn-primary btn-block" id="qobuzPasswordLoginBtn">
+                    <i class="fa-solid fa-right-to-bracket"></i> Войти
+                </button>
+                <details>
+                    <summary>Token / app_id</summary>
+                    <input type="password" id="qobuzTokenInput" placeholder="Qobuz token">
+                    <input type="text" id="qobuzAppIdInput" placeholder="30650571">
+                    <input type="password" id="qobuzAppSecretInput" placeholder="App secret">
+                    <button type="button" class="btn btn-secondary btn-block" id="qobuzTokenLoginBtn">Сохранить token</button>
+                </details>
+            `;
+            queueMicrotask(() => {
+                document.getElementById('qobuzPasswordLoginBtn')?.addEventListener('click', connectQobuzPassword);
+                document.getElementById('qobuzTokenLoginBtn')?.addEventListener('click', connectQobuzToken);
+            });
+            return wrap;
+        }
+
+        async function connectQobuzPassword() {
+            const email = document.getElementById('qobuzEmailInput').value.trim();
+            const password = document.getElementById('qobuzPasswordInput').value;
+            await connectService('qobuz', { method: 'password', email, password });
+            document.getElementById('qobuzPasswordInput').value = '';
+        }
+
+        async function connectQobuzToken() {
+            await connectService('qobuz', {
+                method: 'token',
+                token: document.getElementById('qobuzTokenInput').value.trim(),
+                app_id: document.getElementById('qobuzAppIdInput').value.trim(),
+                app_secret: document.getElementById('qobuzAppSecretInput').value.trim()
+            });
+        }
+
+        async function connectService(service, payload) {
+            try {
+                const data = await api(`/connections/${service}/connect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (data.authorization_url) {
+                    window.location.href = data.authorization_url;
+                    return;
+                }
+                addLog(`${serviceById(service)?.name || service} подключен.`, 'success');
+                await refreshConnections();
+            } catch (err) {
+                addLog(`Ошибка подключения: ${err.message}`, 'error');
+                alert(err.message);
+            }
+        }
+
+        async function connectSpotify() {
+            await connectService('spotify', {});
+        }
+
+        async function disconnectService(service) {
+            try {
+                await api(`/connections/${service}/disconnect`, { method: 'POST' });
+                addLog(`${serviceById(service)?.name || service} отключен.`, 'info');
+                await refreshConnections();
+            } catch (err) {
+                addLog(`Ошибка отключения: ${err.message}`, 'error');
+            }
+        }
+
+        async function refreshConnections() {
+            const data = await api('/connections');
+            connections = data.connections || {};
+            renderAll();
+        }
+
+        function setInputMode(mode) {
+            selectedInputMode = mode;
+            renderInputMode();
+        }
+
+        function renderInputMode() {
+            document.querySelectorAll('[data-input-mode]').forEach(btn => {
+                const mode = btn.dataset.inputMode;
+                btn.classList.toggle('active', mode === selectedInputMode);
+                btn.disabled = selectedSource === 'manual' && mode !== 'manual';
+            });
+            document.getElementById('urlPane').classList.toggle('hidden', selectedInputMode !== 'url');
+            document.getElementById('likedPane').classList.toggle('hidden', selectedInputMode !== 'liked');
+            document.getElementById('manualPane').classList.toggle('hidden', selectedInputMode !== 'manual');
+            document.getElementById('sourceUrlInput').placeholder = selectedSource === 'yandex'
+                ? 'Ссылка Яндекс.Музыки на плейлист, альбом, трек или артиста'
+                : 'Для VK пока используйте ручной список';
+        }
+
+        async function loadFromUrl() {
+            if (selectedSource !== 'yandex') {
+                alert('Для этого источника пока используйте ручной список.');
+                return;
+            }
+            const url = document.getElementById('sourceUrlInput').value.trim();
+            if (!url) return;
+            await importSource({ source: selectedSource, input_type: 'url', url });
+        }
+
+        async function loadLikedTracks() {
+            await importSource({ source: selectedSource, input_type: 'liked' });
+        }
+
+        async function loadManualTracks() {
+            const text = document.getElementById('textInput').value;
+            await importSource({ source: 'manual', input_type: 'manual', text });
+        }
+
+        async function importSource(payload) {
+            try {
+                addLog('Загружаем треки из источника...', 'system');
+                const data = await api('/import/source', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                parsedTracks = data.tracks || [];
+                if (data.playlist_name) {
+                    document.getElementById('playlistNameInput').value = data.playlist_name;
+                }
+                matchedTracks = [];
+                unmatchedTracks = [];
+                renderAll();
+                addLog(`Загружено треков: ${parsedTracks.length}`, 'success');
+            } catch (err) {
+                addLog(`Ошибка загрузки источника: ${err.message}`, 'error');
+                alert(err.message);
+            }
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => {
+                document.getElementById('textInput').value = e.target.result;
+                selectedInputMode = 'manual';
+                renderInputMode();
+                loadManualTracks();
+            };
+            reader.readAsText(file, 'UTF-8');
+        }
+
+        function setupDropZone() {
+            const zone = document.getElementById('dropZone');
+            zone.addEventListener('dragover', event => {
+                event.preventDefault();
+                zone.classList.add('drag-over');
+            });
+            zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+            zone.addEventListener('drop', event => {
+                event.preventDefault();
+                zone.classList.remove('drag-over');
+                const file = event.dataTransfer.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = e => {
+                    document.getElementById('textInput').value = e.target.result;
+                    selectedInputMode = 'manual';
+                    renderInputMode();
+                    loadManualTracks();
+                };
+                reader.readAsText(file, 'UTF-8');
+            });
+        }
+
+        function renderTracksTable() {
+            const tbody = document.getElementById('tracksTableBody');
+            tbody.innerHTML = '';
+            document.getElementById('loadedBadge').textContent = `${parsedTracks.length} треков`;
+            parsedTracks.forEach((track, index) => {
+                const tr = document.createElement('tr');
+                const idx = document.createElement('td');
+                idx.textContent = String(index + 1);
+                const nameCell = document.createElement('td');
+                const input = document.createElement('input');
+                input.className = 'table-input';
+                input.value = track;
+                input.addEventListener('input', () => {
+                    parsedTracks[index] = input.value;
+                });
+                nameCell.appendChild(input);
+                const actionCell = document.createElement('td');
+                const del = document.createElement('button');
+                del.className = 'btn-icon delete';
+                del.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+                del.addEventListener('click', () => {
+                    parsedTracks.splice(index, 1);
+                    renderTracksTable();
+                });
+                actionCell.appendChild(del);
+                tr.append(idx, nameCell, actionCell);
+                tbody.appendChild(tr);
+            });
+        }
+
+        function addTrackRow() {
+            parsedTracks.push('');
+            renderTracksTable();
+        }
+
+        async function startMatching() {
+            if (parsedTracks.filter(Boolean).length === 0) {
+                alert('Сначала загрузите список треков.');
+                return;
+            }
+            if (!connections[selectedDestination]?.authorized) {
+                alert('Сначала подключите сервис назначения.');
+                return;
+            }
+            matchedTracks = [];
+            unmatchedTracks = [];
+            updateProgress(10);
+            renderResults();
+            try {
+                addLog(`Ищем треки в ${serviceById(selectedDestination)?.name || selectedDestination}...`, 'system');
+                const data = await api('/match', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination: selectedDestination, tracks: parsedTracks })
+                });
+                (data.matches || []).forEach(item => {
+                    if (item.match) {
+                        matchedTracks.push({
+                            originalIndex: item.index,
+                            original: item.original,
+                            ...item.match
+                        });
+                    } else {
+                        unmatchedTracks.push({
+                            originalIndex: item.index,
+                            original: item.original,
+                            searchQuery: item.original
+                        });
+                    }
+                });
+                updateProgress(100);
+                renderResults();
+                addLog(`Сопоставление завершено: ${data.matched} из ${data.total}.`, 'success');
+                if (matchedTracks.length > 0) loadDestinationPlaylists();
+            } catch (err) {
+                updateProgress(0);
+                addLog(`Ошибка сопоставления: ${err.message}`, 'error');
+                alert(err.message);
+            }
+        }
+
+        function renderResults() {
+            document.getElementById('matchedCount').textContent = `${matchedTracks.length} найдено`;
+            document.getElementById('unmatchedCount').textContent = `${unmatchedTracks.length} не найдено`;
+            document.getElementById('readyBadge').textContent = `${matchedTracks.length} готово`;
+            renderFound();
+            renderNotFound();
+        }
+
+        function renderFound() {
+            const container = document.getElementById('foundTab');
+            container.innerHTML = '';
+            if (!matchedTracks.length) {
+                container.appendChild(messageNode('Пока нет найденных треков.'));
+                return;
+            }
+            matchedTracks
+                .slice()
+                .sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))
+                .forEach((track, index) => container.appendChild(trackCard(track, index)));
+        }
+
+        function renderNotFound() {
+            const container = document.getElementById('notFoundTab');
+            container.innerHTML = '';
+            if (!unmatchedTracks.length) {
+                container.appendChild(messageNode(matchedTracks.length ? 'Все треки сопоставлены.' : 'Пока нет результатов.'));
+                return;
+            }
+            unmatchedTracks.forEach((track, index) => {
+                const row = document.createElement('div');
+                row.className = 'unmatched-row glass-card-hover';
+                const meta = document.createElement('div');
+                meta.className = 'unmatched-meta';
+                meta.textContent = track.original;
+                const actions = document.createElement('div');
+                actions.className = 'unmatched-actions';
+                const search = smallButton('Найти вручную', 'fa-solid fa-magnifying-glass');
+                search.addEventListener('click', () => openSearchModal(index));
+                const remove = document.createElement('button');
+                remove.className = 'btn-icon delete';
+                remove.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+                remove.addEventListener('click', () => {
+                    unmatchedTracks.splice(index, 1);
+                    renderResults();
+                });
+                actions.append(search, remove);
+                row.append(meta, actions);
+                container.appendChild(row);
+            });
+        }
+
+        function trackCard(track, index) {
+            const card = document.createElement('div');
+            card.className = 'track-card glass-card-hover';
+            const img = document.createElement('img');
+            img.className = 'track-cover';
+            img.src = safeImageUrl(track.cover);
+            img.alt = track.album || track.title || 'cover';
+            const info = document.createElement('div');
+            info.className = 'track-card-info';
+            const title = document.createElement('h4');
+            title.className = 'track-title';
+            title.textContent = track.title || track.original;
+            const artist = document.createElement('p');
+            artist.className = 'track-artist';
+            artist.textContent = track.artist || '';
+            const album = document.createElement('p');
+            album.className = 'track-album';
+            album.textContent = track.album || '';
+            info.append(title, artist, album);
+            const del = document.createElement('button');
+            del.className = 'btn-icon delete mini-delete';
+            del.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+            del.addEventListener('click', () => {
+                matchedTracks.splice(index, 1);
+                renderResults();
+            });
+            card.append(img, info, del);
+            return card;
+        }
+
+        function openSearchModal(index) {
+            editingUnmatchedIndex = index;
+            document.getElementById('manualSearchInput').value = unmatchedTracks[index].searchQuery || unmatchedTracks[index].original;
+            document.getElementById('searchResultsList').innerHTML = '';
+            document.getElementById('searchModal').classList.remove('hidden');
+            document.getElementById('manualSearchInput').focus();
+        }
+
+        function closeSearchModal() {
+            document.getElementById('searchModal').classList.add('hidden');
+            editingUnmatchedIndex = null;
+        }
+
+        async function runManualSearch() {
+            const query = document.getElementById('manualSearchInput').value.trim();
+            if (!query) return;
+            const loader = document.getElementById('searchLoader');
+            const list = document.getElementById('searchResultsList');
+            loader.classList.remove('hidden');
+            list.innerHTML = '';
+            try {
+                const data = await api('/search/single', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination: selectedDestination, query })
+                });
+                loader.classList.add('hidden');
+                const results = data.results || [];
+                if (!results.length) {
+                    list.appendChild(messageNode('Ничего не найдено.'));
+                    return;
+                }
+                results.forEach(track => {
+                    const row = document.createElement('div');
+                    row.className = 'search-result-item glass-card-hover';
+                    const img = document.createElement('img');
+                    img.className = 'search-result-cover';
+                    img.src = safeImageUrl(track.cover);
+                    const info = document.createElement('div');
+                    info.className = 'search-result-info';
+                    info.innerHTML = `
+                        <h4 class="search-result-title">${escapeHtml(track.title)}</h4>
+                        <p class="search-result-artist">${escapeHtml(track.artist)}</p>
+                        <p class="search-result-album">${escapeHtml(track.album)}</p>
+                    `;
+                    const btn = smallButton('Выбрать', 'fa-solid fa-check');
+                    btn.addEventListener('click', () => selectManualMatch(track));
+                    row.append(img, info, btn);
+                    list.appendChild(row);
+                });
+            } catch (err) {
+                loader.classList.add('hidden');
+                list.appendChild(messageNode(`Ошибка: ${err.message}`));
+            }
+        }
+
+        function selectManualMatch(track) {
+            if (editingUnmatchedIndex === null) return;
+            const original = unmatchedTracks[editingUnmatchedIndex];
+            matchedTracks.push({
+                originalIndex: original.originalIndex,
+                original: original.original,
+                ...track
+            });
+            unmatchedTracks.splice(editingUnmatchedIndex, 1);
+            closeSearchModal();
+            renderResults();
+        }
+
+        async function loadDestinationPlaylists() {
+            if (!connections[selectedDestination]?.authorized) return;
+            const select = document.getElementById('playlistSelect');
+            select.innerHTML = '<option value="">Загрузка...</option>';
+            try {
+                const data = await api(`/destinations/${selectedDestination}/playlists`);
+                select.innerHTML = '';
+                const playlists = data.playlists || [];
+                if (!playlists.length) {
+                    select.innerHTML = '<option value="">Нет плейлистов</option>';
+                    return;
+                }
+                playlists.forEach(playlist => {
+                    const option = document.createElement('option');
+                    option.value = playlist.id;
+                    option.textContent = `${playlist.name} (${playlist.tracks_count || 0})`;
+                    select.appendChild(option);
+                });
+            } catch (err) {
+                select.innerHTML = '<option value="">Ошибка загрузки</option>';
+                addLog(`Не удалось загрузить плейлисты: ${err.message}`, 'error');
+            }
+        }
+
+        function renderPlaylistMode() {
+            const mode = document.querySelector('input[name="playlistMode"]:checked')?.value || 'new';
+            document.getElementById('newPlaylistGroup').classList.toggle('hidden', mode !== 'new');
+            document.getElementById('existingPlaylistGroup').classList.toggle('hidden', mode !== 'existing');
+            if (mode === 'existing') loadDestinationPlaylists();
+        }
+
+        async function transferTracks() {
+            if (!matchedTracks.length) {
+                alert('Нет найденных треков для переноса.');
+                return;
+            }
+            const mode = document.querySelector('input[name="playlistMode"]:checked').value;
+            const payload = {
+                destination: selectedDestination,
+                order: document.getElementById('playlistOrderSelect').value,
+                track_ids: matchedTracks
+                    .slice()
+                    .sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))
+                    .map(track => track.uri || track.id)
+            };
+            if (mode === 'new') {
+                payload.name = document.getElementById('playlistNameInput').value.trim();
+            } else {
+                payload.playlist_id = document.getElementById('playlistSelect').value;
+            }
+            try {
+                const data = await api('/transfer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                addLog(`Перенос завершен: добавлено ${data.count} треков.`, 'success');
+                confetti({ particleCount: 120, spread: 70, origin: { y: 0.65 } });
+                alert(data.detail || `Готово. Добавлено треков: ${data.count}`);
+            } catch (err) {
+                addLog(`Ошибка переноса: ${err.message}`, 'error');
+                alert(err.message);
+            }
+        }
+
+        function switchResultsTab(tab) {
+            document.getElementById('foundTabBtn').classList.toggle('active', tab === 'found');
+            document.getElementById('notFoundTabBtn').classList.toggle('active', tab === 'notFound');
+            document.getElementById('foundTab').classList.toggle('active', tab === 'found');
+            document.getElementById('notFoundTab').classList.toggle('active', tab === 'notFound');
+        }
+
+        function updateProgress(percent) {
+            document.getElementById('progressBar').style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        }
 
         function openYandexAuthModal() {
-            document.getElementById('yandexCodeDisplay').innerText = 'Загрузка...';
+            document.getElementById('yandexCodeDisplay').textContent = 'Запрашиваем код...';
             document.getElementById('yandexAuthModal').classList.remove('hidden');
-            
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}${API_BASE}/ws/yandex-auth`;
-            addLog(`Подключение к Yandex Auth WebSocket: ${wsUrl}...`);
-            
-            yandexWs = new WebSocket(wsUrl);
-            let yandexCodeReceived = false;
-
-            yandexWs.onopen = () => {
-                document.getElementById('yandexCodeDisplay').innerText = 'Запрашиваем код...';
-            };
-            
-            yandexWs.onmessage = (event) => {
+            yandexWs = new WebSocket(`${protocol}//${window.location.host}${API_BASE}/ws/yandex-auth`);
+            yandexWs.onmessage = async event => {
                 const data = JSON.parse(event.data);
                 if (data.type === 'code') {
-                    yandexCodeReceived = true;
-                    document.getElementById('yandexCodeDisplay').innerText = data.user_code;
+                    document.getElementById('yandexCodeDisplay').textContent = data.user_code;
                     document.getElementById('yandexActivateLink').href = data.verification_url;
-                    addLog(`Получен код авторизации Яндекс.Музыки: ${data.user_code}`, 'info');
                 } else if (data.type === 'success') {
-                    addLog(`Авторизация в Яндекс.Музыке прошла успешно!`, 'success');
-                    updateYandexAuthIndicator({
-                        authorized: true,
-                        display_name: data.display_name,
-                        uid: data.uid
-                    });
+                    addLog(`Яндекс.Музыка подключена: ${data.display_name}`, 'success');
                     closeYandexAuthModal();
+                    await refreshConnections();
                 } else if (data.type === 'error') {
-                    addLog(`Ошибка авторизации Яндекс.Музыки: ${data.message}`, 'error');
-                    alert(`Ошибка авторизации: ${data.message}`);
-                    closeYandexAuthModal();
+                    addLog(`Ошибка Яндекс.Музыки: ${data.message}`, 'error');
+                    document.getElementById('yandexCodeDisplay').textContent = 'Ошибка';
                 }
             };
-            
+            yandexWs.onerror = () => {
+                document.getElementById('yandexCodeDisplay').textContent = 'Ошибка соединения';
+            };
             yandexWs.onclose = () => {
-                if (!yandexCodeReceived && !document.getElementById('yandexAuthModal').classList.contains('hidden')) {
-                    document.getElementById('yandexCodeDisplay').innerText = 'Не удалось получить код';
+                if (!document.getElementById('yandexAuthModal').classList.contains('hidden')) {
+                    addLog('Yandex Auth WebSocket закрыт.', 'warning');
                 }
-                addLog('Yandex Auth WebSocket закрыт.');
-            };
-            
-            yandexWs.onerror = (err) => {
-                document.getElementById('yandexCodeDisplay').innerText = 'Ошибка соединения';
-                addLog('Ошибка Yandex Auth WebSocket.', 'error');
             };
         }
 
@@ -875,719 +974,88 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             }
         }
 
-        async function logoutYandex() {
-            if (!confirm('Вы действительно хотите выйти из аккаунта Яндекс.Музыки?')) return;
-            try {
-                addLog('Выходим из аккаунта Яндекс.Музыки...');
-                const res = await fetch(`${API_BASE}/auth/yandex-logout`, { method: 'POST' });
-                await readApiResponse(res);
-                updateYandexAuthIndicator({ authorized: false });
-                addLog('Вы успешно вышли из Яндекс.Музыки.', 'info');
-            } catch (err) {
-                addLog(`Ошибка при выходе из Яндекс.Музыки: ${err.message}`, 'error');
+        function addLog(text, type = 'info') {
+            const container = document.getElementById('logsContainer');
+            const line = document.createElement('div');
+            line.className = `log-line ${type}`;
+            const time = document.createElement('span');
+            time.className = 'log-time';
+            time.textContent = `[${new Date().toLocaleTimeString()}]`;
+            line.append(time, ` ${text}`);
+            container.appendChild(line);
+            while (container.children.length > MAX_LOG_LINES) {
+                container.removeChild(container.firstElementChild);
             }
+            container.scrollTop = container.scrollHeight;
         }
 
-        async function importYandexLiked() {
-            const btn = document.getElementById('yandexImportLikedBtn');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Загрузка...';
-            addLog('Запуск импорта списка «Мне нравится» из Яндекс.Музыки...', 'system');
-            
-            try {
-                const res = await fetch(`${API_BASE}/tracks/yandex-liked`, { method: 'POST' });
-                if (res.status === 200) {
-                    const data = await readApiResponse(res);
-                    parsedTracks = data.tracks || [];
-                    
-                    if (parsedTracks.length === 0) {
-                        addLog('Ваш список любимых треков в Яндекс.Музыке пуст.', 'warning');
-                        alert('Список «Мне нравится» пуст.');
-                        return;
-                    }
-                    
-                    addLog(`Успешно загружено ${parsedTracks.length} любимых треков!`, 'success');
-                    
-                    if (data.playlist_name) {
-                        document.getElementById('playlistNameInput').value = data.playlist_name;
-                    }
-                    
-                    renderTracksTable();
-                    goToStep(2);
-                } else {
-                    const data = await readApiResponse(res);
-                    throw new Error(data.detail || 'Не удалось загрузить любимые треки');
-                }
-            } catch (err) {
-                addLog(`Ошибка импорта «Мне нравится»: ${err.message}`, 'error');
-                alert(`Не удалось импортировать: ${err.message}`);
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-heart"></i> Импорт «Мне нравится»';
-            }
+        function serviceById(id) {
+            return services.find(service => service.id === id);
         }
 
-        // Импорт по ссылке Яндекс.Музыки
-        async function importFromYandexUrl() {
-            const url = document.getElementById('yandexUrlInput').value.trim();
-            if (!url) {
-                addLog('Пожалуйста, введите ссылку Яндекс.Музыки', 'warning');
-                return;
-            }
-            
-            const btn = document.getElementById('importYandexUrlBtn');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Загрузка...';
-            addLog(`Запуск импорта по ссылке: ${url}...`, 'system');
-            
-            try {
-                const res = await fetch(`${API_BASE}/tracks/parse-url`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url })
-                });
-                
-                if (res.status === 200) {
-                    const data = await readApiResponse(res);
-                    parsedTracks = data.tracks || [];
-                    
-                    if (parsedTracks.length === 0) {
-                        addLog('Не найдено треков по ссылке.', 'warning');
-                        alert('По ссылке не найдено треков. Убедитесь, что плейлист/альбом не пустой и является публичным.');
-                        return;
-                    }
-                    
-                    addLog(`Успешно загружено ${parsedTracks.length} треков по ссылке!`, 'success');
-                    
-                    // Обновляем предлагаемое имя плейлиста
-                    if (data.playlist_name) {
-                        document.getElementById('playlistNameInput').value = data.playlist_name;
-                        addLog(`Предложено название плейлиста: "${data.playlist_name}"`, 'info');
-                    }
-                    
-                    renderTracksTable();
-                    goToStep(2);
-                } else {
-                    const data = await readApiResponse(res);
-                    throw new Error(data.detail || 'Не удалось импортировать треки по ссылке');
-                }
-            } catch (err) {
-                addLog(`Ошибка импорта по ссылке: ${err.message}`, 'error');
-                alert(`Ошибка импорта: ${err.message}`);
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-download"></i> Загрузить';
-            }
+        function messageNode(text) {
+            const node = document.createElement('p');
+            node.className = 'empty-message';
+            node.textContent = text;
+            return node;
         }
 
-        // Загрузка текстового поля
-        function parseInput() {
-            const text = document.getElementById('textInput').value.trim();
-            if (!text) {
-                addLog('Список треков пуст. Введите названия треков или выберите файл.', 'warning');
-                return;
-            }
-            addLog('Парсинг введенного вручную списка треков...');
-            const formData = new FormData();
-            formData.append('text', text);
-
-            parseAPI(formData);
+        function primaryButton(text, icon) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-primary btn-block';
+            btn.innerHTML = `<i class="${icon}"></i> ${escapeHtml(text)}`;
+            return btn;
         }
 
-        // API запрос парсинга
-        async function parseAPI(formData) {
-            try {
-                const res = await fetch(`${API_BASE}/tracks/parse`, {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await readApiResponse(res);
-                parsedTracks = data.tracks || [];
-                
-                if (parsedTracks.length === 0) {
-                    addLog('Не найдено валидных строк в источнике.', 'warning');
-                    return;
-                }
-
-                addLog(`Успешно загружено ${parsedTracks.length} треков!`, 'success');
-                renderTracksTable();
-                goToStep(2);
-            } catch (err) {
-                addLog(`Ошибка при разборе треков: ${err.message}`, 'error');
-            }
-        }
-
-        // Генерация таблицы треков для Шага 2
-        function renderTracksTable() {
-            const tbody = document.getElementById('tracksTableBody');
-            tbody.innerHTML = '';
-            document.getElementById('parsedCountBadge').innerText = `Загружено: ${parsedTracks.length} треков`;
-
-            parsedTracks.forEach((track, idx) => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>${idx + 1}</td>
-                    <td>
-                        <input type="text" class="table-input" value="${escapeHtml(track)}" onchange="updateTrackName(${idx}, this.value)">
-                    </td>
-                    <td style="text-align: center;">
-                        <button class="btn-icon delete" onclick="deleteTrackRow(${idx})" title="Удалить">
-                            <i class="fa-solid fa-trash-can"></i>
-                        </button>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        // Действия с таблицей треков
-        function updateTrackName(idx, val) {
-            parsedTracks[idx] = val.trim();
-        }
-
-        function deleteTrackRow(idx) {
-            parsedTracks.splice(idx, 1);
-            renderTracksTable();
-        }
-
-        function addTrackRow() {
-            parsedTracks.push('');
-            renderTracksTable();
-            // Скроллим таблицу вниз
-            const wrapper = document.querySelector('.tracks-table-wrapper');
-            wrapper.scrollTop = wrapper.scrollHeight;
-        }
-
-        function escapeHtml(str) {
-            return String(str ?? '')
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
+        function smallButton(text, icon) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-secondary btn-xs';
+            btn.innerHTML = `<i class="${icon}"></i> ${escapeHtml(text)}`;
+            return btn;
         }
 
         function safeImageUrl(url) {
             const fallback = 'https://static.qobuz.com/images/covers/50.jpg';
             try {
                 const parsed = new URL(url || fallback, window.location.href);
-                if (parsed.protocol !== 'https:') return fallback;
-                return parsed.href;
+                return parsed.protocol === 'https:' ? parsed.href : fallback;
             } catch {
                 return fallback;
             }
         }
 
-        function renderPlainMessage(container, className, text) {
-            container.innerHTML = '';
-            const message = document.createElement('p');
-            message.className = className;
-            message.textContent = text;
-            container.appendChild(message);
+        function escapeHtml(str) {
+            return String(str ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
         }
 
-        // Шаг 3: Вебсокет-поиск и сопоставление
-        function startMatching() {
-            // Очищаем предыдущие результаты
-            matchedTracks = [];
-            unmatchedTracks = [];
-            if (resultsUiUpdateTimer) {
-                clearTimeout(resultsUiUpdateTimer);
-                resultsUiUpdateTimer = null;
-            }
-            updateResultsUI();
-
-            // Скрываем форму плейлиста и экран успеха
-            document.getElementById('playlistSection').classList.add('hidden');
-            document.getElementById('successScreen').classList.add('hidden');
-
-            goToStep(3);
-
-            // Фильтруем пустые
-            const tracksToSend = parsedTracks.filter(t => t && t.trim());
-            if (tracksToSend.length === 0) {
-                addLog('Список треков для сопоставления пуст!', 'warning');
-                goToStep(2);
-                return;
-            }
-
-            // Настройка UI прогресса
-            document.getElementById('matchingSub').innerText = 'Ищем ваши треки в музыкальной базе Qobuz...';
-            updateProgressBar(0, tracksToSend.length, 0);
-
-            // Подключение по вебсокету
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}${API_BASE}/ws/match`;
-            addLog(`Подключение к WebSocket: ${wsUrl}...`);
-
-            wsConn = new WebSocket(wsUrl);
-
-            wsConn.onopen = () => {
-                addLog('WebSocket соединение установлено. Отправляем список треков...');
-                wsConn.send(JSON.stringify({ tracks: tracksToSend }));
-            };
-
-            wsConn.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'progress') {
-                    const idx = data.index;
-                    const processed = data.processed || (idx + 1);
-                    const query = data.query;
-                    const status = data.status;
-                    const match = data.match;
-
-                    if (status === 'found' && match) {
-                        matchedTracks.push({
-                            originalIndex: idx,
-                            original: query,
-                            id: match.id,
-                            title: match.title,
-                            artist: match.artist,
-                            album: match.album,
-                            cover: match.cover,
-                            duration: match.duration,
-                            hires: match.hires
-                        });
-                        addLog(`Найден: "${query}" -> ${match.artist} - ${match.title} (ID: ${match.id})`, 'success');
-                    } else {
-                        unmatchedTracks.push({
-                            originalIndex: idx,
-                            original: query,
-                            searchQuery: query, // Сюда сохраним поисковый запрос, который юзер сможет менять
-                            id: null
-                        });
-                        addLog(`Не найден: "${query}"`, 'warning');
-                    }
-                    
-                    updateProgressBar(processed, tracksToSend.length, matchedTracks.length);
-                    scheduleResultsUIUpdate();
-
-                } else if (data.type === 'done') {
-                    addLog(`Сопоставление завершено! Найдено: ${data.matched} из ${data.total}`, 'success');
-                    document.getElementById('matchingSub').innerText = 'Сопоставление завершено! Проверьте списки.';
-                    flushResultsUIUpdate();
-                    wsConn.close();
-                    
-                    // Показываем секцию импорта/создания плейлиста
-                    if (matchedTracks.length > 0) {
-                        document.getElementById('playlistSection').classList.remove('hidden');
-                    }
-                } else if (data.type === 'error') {
-                    addLog(`Ошибка при сопоставлении: ${data.message}`, 'error');
-                }
-            };
-
-            wsConn.onerror = (err) => {
-                addLog(`Ошибка WebSocket соединения`, 'error');
-            };
-
-            wsConn.onclose = () => {
-                addLog('WebSocket соединение закрыто.');
-            };
+        function toggleLogs() {
+            const card = document.getElementById('logsCard');
+            const icon = document.getElementById('logsChevron');
+            card.classList.toggle('collapsed');
+            icon.classList.toggle('fa-chevron-up');
+            icon.classList.toggle('fa-chevron-down');
         }
 
-        // Обновление прогресс-бара
-        function updateProgressBar(current, total, matched) {
-            const percent = Math.round((current / total) * 100) || 0;
-            document.getElementById('progressPercent').innerText = `${percent}%`;
-            document.getElementById('progressStats').innerText = `Обработано: ${current} / ${total} (Найдено: ${matched})`;
-            document.getElementById('progressBarFill').style.width = `${percent}%`;
-        }
-
-        // Вкладки результатов
-        function switchTab(tab) {
-            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-
-            if (tab === 'found') {
-                document.getElementById('tabFoundBtn').classList.add('active');
-                document.getElementById('tabFoundContent').classList.add('active');
-            } else {
-                document.getElementById('tabNotFoundBtn').classList.add('active');
-                document.getElementById('tabNotFoundContent').classList.add('active');
-            }
-        }
-
-        // Форматирование секунд в mm:ss
-        function formatDuration(sec) {
-            if (!sec) return '0:00';
-            const m = Math.floor(sec / 60);
-            const s = Math.floor(sec % 60).toString().padStart(2, '0');
-            return `${m}:${s}`;
-        }
-
-        function scheduleResultsUIUpdate() {
-            if (resultsUiUpdateTimer) return;
-            resultsUiUpdateTimer = setTimeout(() => {
-                resultsUiUpdateTimer = null;
-                updateResultsUI();
-            }, RESULTS_UI_UPDATE_DELAY_MS);
-        }
-
-        function flushResultsUIUpdate() {
-            if (resultsUiUpdateTimer) {
-                clearTimeout(resultsUiUpdateTimer);
-                resultsUiUpdateTimer = null;
-            }
-            updateResultsUI();
-        }
-
-        // Обновление списков найденных / ненайденных треков в UI
-        function updateResultsUI() {
-            // Обновляем баджи вкладок
-            document.getElementById('badgeFound').innerText = matchedTracks.length;
-            document.getElementById('badgeNotFound').innerText = unmatchedTracks.length;
-
-            // Рендер найденных
-            const foundGrid = document.getElementById('foundGrid');
-            foundGrid.innerHTML = '';
-            
-            if (matchedTracks.length === 0) {
-                foundGrid.innerHTML = '<p class="empty-message">Нет найденных треков</p>';
-            } else {
-                matchedTracks.forEach((track, idx) => {
-                    const card = document.createElement('div');
-                    card.className = 'track-card glass-card-hover animate-fade-in';
-                    const coverImg = safeImageUrl(track.cover);
-                    card.innerHTML = `
-                        <img src="${coverImg}" alt="${escapeHtml(track.album)}" class="track-cover">
-                        <div class="track-card-info">
-                            <h4 class="track-title" title="${escapeHtml(track.title)}">
-                                ${escapeHtml(track.title)}
-                                ${track.hires ? '<span class="hires-badge">Hi-Res</span>' : ''}
-                            </h4>
-                            <p class="track-artist">${escapeHtml(track.artist)}</p>
-                            <p class="track-album">${escapeHtml(track.album)}</p>
-                            <div class="track-meta-row">
-                                <span class="track-duration"><i class="fa-regular fa-clock"></i> ${formatDuration(track.duration)}</span>
-                                <span class="track-qobuz-id">ID: ${track.id}</span>
-                            </div>
-                        </div>
-                        <button class="btn-icon delete mini-delete" onclick="removeMatchedTrack(${idx})" title="Удалить из импорта">
-                            <i class="fa-solid fa-xmark"></i>
-                        </button>
-                    `;
-                    foundGrid.appendChild(card);
-                });
-            }
-
-            // Рендер ненайденных
-            const notFoundList = document.getElementById('notFoundList');
-            notFoundList.innerHTML = '';
-            
-            if (unmatchedTracks.length === 0) {
-                notFoundList.innerHTML = '<p class="empty-message">Все треки сопоставлены!</p>';
-            } else {
-                unmatchedTracks.forEach((track, idx) => {
-                    const row = document.createElement('div');
-                    row.className = 'unmatched-row glass-card-hover animate-fade-in';
-                    row.innerHTML = `
-                        <div class="unmatched-meta">
-                            <span class="unmatched-index">#${idx + 1}</span>
-                            <span class="unmatched-name">${escapeHtml(track.original)}</span>
-                        </div>
-                        <div class="unmatched-actions">
-                            <button class="btn btn-secondary btn-xs" onclick="openSearchModal(${idx})">
-                                <i class="fa-solid fa-magnifying-glass"></i> Найти вручную
-                            </button>
-                            <button class="btn-icon delete" onclick="removeUnmatchedTrack(${idx})" title="Исключить">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>
-                        </div>
-                    `;
-                    notFoundList.appendChild(row);
-                });
-            }
-        }
-
-        // Действия с результатами
-        function removeMatchedTrack(idx) {
-            matchedTracks.splice(idx, 1);
-            updateResultsUI();
-            if (matchedTracks.length === 0) {
-                document.getElementById('playlistSection').classList.add('hidden');
-            }
-        }
-
-        function removeUnmatchedTrack(idx) {
-            unmatchedTracks.splice(idx, 1);
-            updateResultsUI();
-        }
-
-        // Модальное окно ручного поиска
-        function openSearchModal(idx) {
-            currentlyEditingUnmatchedIdx = idx;
-            const track = unmatchedTracks[idx];
-            document.getElementById('manualSearchInput').value = track.original;
-            document.getElementById('searchResultsList').innerHTML = '';
-            document.getElementById('searchModal').classList.remove('hidden');
-            document.getElementById('manualSearchInput').focus();
-        }
-
-        function closeSearchModal() {
-            document.getElementById('searchModal').classList.add('hidden');
-            currentlyEditingUnmatchedIdx = null;
-        }
-
-        // API запрос ручного поиска альтернативы
-        async function triggerManualSearch() {
-            const query = document.getElementById('manualSearchInput').value.trim();
-            if (!query) return;
-
-            const loader = document.getElementById('searchLoader');
-            const list = document.getElementById('searchResultsList');
-
-            loader.classList.remove('hidden');
-            list.innerHTML = '';
-
-            try {
-                addLog(`Ручной поиск на Qobuz для: "${query}"...`);
-                const res = await fetch(`${API_BASE}/search/single`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query })
-                });
-                const data = await readApiResponse(res);
-                const results = data.results || [];
-                
-                loader.classList.add('hidden');
-
-                if (results.length === 0) {
-                    list.innerHTML = '<p class="empty-message">Ничего не найдено</p>';
-                    return;
-                }
-
-                results.forEach(track => {
-                    const row = document.createElement('div');
-                    row.className = 'search-result-item glass-card-hover';
-                    const coverImg = safeImageUrl(track.cover);
-                    row.innerHTML = `
-                        <img src="${coverImg}" alt="${escapeHtml(track.album)}" class="search-result-cover">
-                        <div class="search-result-info">
-                            <h4 class="search-result-title">
-                                ${escapeHtml(track.title)}
-                                ${track.hires ? '<span class="hires-badge">Hi-Res</span>' : ''}
-                            </h4>
-                            <p class="search-result-artist">${escapeHtml(track.artist)}</p>
-                            <p class="search-result-album">${escapeHtml(track.album)}</p>
-                            <span class="search-result-duration"><i class="fa-regular fa-clock"></i> ${formatDuration(track.duration)}</span>
-                        </div>
-                        <button class="btn btn-secondary btn-xs select-match-btn" type="button">
-                            Выбрать <i class="fa-solid fa-check"></i>
-                        </button>
-                    `;
-                    row.querySelector('.select-match-btn').addEventListener('click', () => selectManualMatch(track));
-                    list.appendChild(row);
-                });
-            } catch (err) {
-                loader.classList.add('hidden');
-                renderPlainMessage(list, 'error-message', `Ошибка: ${err.message}`);
-                addLog(`Ошибка ручного поиска: ${err.message}`, 'error');
-            }
-        }
-
-        // Подтверждение ручного выбора
-        function selectManualMatch(track) {
-            if (currentlyEditingUnmatchedIdx === null) return;
-            
-            // Удаляем из unmatched
-            const removed = unmatchedTracks.splice(currentlyEditingUnmatchedIdx, 1)[0];
-
-            // Добавляем в matched
-            matchedTracks.push({
-                originalIndex: removed.originalIndex,
-                original: removed.original,
-                id: track.id,
-                title: track.title,
-                artist: track.artist,
-                album: track.album,
-                cover: track.cover,
-                duration: track.duration,
-                hires: track.hires
-            });
-
-            addLog(`Вручную привязан трек: "${removed.original}" -> ${track.artist} - ${track.title} (ID: ${track.id})`, 'success');
-            
-            updateResultsUI();
-            
-            // Показываем кнопку создания плейлиста, если до этого она была скрыта
-            document.getElementById('playlistSection').classList.remove('hidden');
-
-            closeSearchModal();
-
-            // Если ненайденных треков больше нет, автоматически переключаем на найденные
-            if (unmatchedTracks.length === 0) {
-                switchTab('found');
-            }
-        }
-
-        // Переключение режима плейлиста (новый или существующий)
-        function togglePlaylistMode(mode) {
-            const newGroup = document.getElementById('playlistNewGroup');
-            const existingGroup = document.getElementById('playlistExistingGroup');
-            
-            if (mode === 'new') {
-                newGroup.classList.remove('hidden');
-                existingGroup.classList.add('hidden');
-            } else {
-                newGroup.classList.add('hidden');
-                existingGroup.classList.remove('hidden');
-                loadQobuzPlaylists();
-            }
-        }
-
-        // Загрузка существующих плейлистов Qobuz
-        async function loadQobuzPlaylists() {
-            const select = document.getElementById('playlistSelect');
-            select.innerHTML = '<option value="">Загрузка списка...</option>';
-            addLog('Загрузка плейлистов Qobuz...');
-            
-            try {
-                const res = await fetch(`${API_BASE}/qobuz/playlists`);
-                const data = await readApiResponse(res);
-                select.innerHTML = '';
-                if (data.playlists && data.playlists.length > 0) {
-                    data.playlists.forEach(pl => {
-                        const opt = document.createElement('option');
-                        opt.value = pl.id;
-                        opt.innerText = `${pl.name} (${pl.tracks_count} треков)`;
-                        select.appendChild(opt);
-                    });
-                    addLog(`Успешно загружено ${data.playlists.length} плейлистов Qobuz.`, 'success');
-                } else {
-                    select.innerHTML = '<option value="">Нет созданных плейлистов</option>';
-                    addLog('У вас нет плейлистов на Qobuz.', 'warning');
-                }
-            } catch (err) {
-                select.innerHTML = '<option value="">Ошибка загрузки</option>';
-                addLog(`Не удалось загрузить плейлисты Qobuz: ${err.message}`, 'error');
-            }
-        }
-
-        // Создание плейлиста и импорт треков
-        async function createPlaylistAndImport() {
-            const mode = document.querySelector('input[name="playlistMode"]:checked').value;
-            let name = null;
-            let playlistId = null;
-
-            if (mode === 'new') {
-                name = document.getElementById('playlistNameInput').value.trim();
-                if (!name) {
-                    addLog('Пожалуйста, введите название плейлиста', 'warning');
-                    return;
-                }
-            } else {
-                playlistId = document.getElementById('playlistSelect').value;
-                if (!playlistId) {
-                    addLog('Пожалуйста, выберите плейлист из списка', 'warning');
-                    alert('Не выбран плейлист для импорта.');
-                    return;
-                }
-            }
-
-            let trackIds = matchedTracks
-                .slice()
-                .sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))
-                .map(t => t.id);
-            if (trackIds.length === 0) {
-                addLog('Нет треков для импорта в плейлист', 'warning');
-                return;
-            }
-
-            const order = document.getElementById('playlistOrderSelect').value;
-            if (order === 'reverse') {
-                addLog('Порядок добавления реверсирован (последние треки будут сверху плейлиста).', 'system');
-                trackIds = [...trackIds].reverse();
-            } else {
-                addLog('Сохраняем оригинальный порядок (первые треки будут сверху плейлиста).', 'system');
-            }
-
-            const importBtn = document.getElementById('createPlaylistBtn');
-            importBtn.disabled = true;
-            importBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Импортируем...';
-
-            try {
-                const bodyData = { track_ids: trackIds };
-                if (mode === 'new') {
-                    bodyData.name = name;
-                    addLog(`Создаем плейлист "${name}" в Qobuz с ${trackIds.length} треками...`);
-                } else {
-                    bodyData.playlist_id = playlistId;
-                    const selectedText = document.getElementById('playlistSelect').options[document.getElementById('playlistSelect').selectedIndex].text;
-                    addLog(`Добавляем ${trackIds.length} треков в плейлист "${selectedText}"...`);
-                }
-
-                const res = await fetch(`${API_BASE}/playlist/create`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(bodyData)
-                });
-                const data = await readApiResponse(res);
-
-                if (data.status === 'success' || data.status === 'partial_success') {
-                    if (data.account && data.account.display_name) {
-                        addLog(`Загрузка выполнена в аккаунт Qobuz: ${data.account.display_name} (ID: ${data.account.id}).`, 'success');
-                    }
-
-                    if (data.is_new) {
-                        addLog(`Плейлист создан успешно! ID плейлиста: ${data.playlist_id}`, 'success');
-                        document.getElementById('successScreen').querySelector('h2').innerText = 'Плейлист успешно создан!';
-                    } else {
-                        addLog(`Треки успешно добавлены в существующий плейлист! ID: ${data.playlist_id}`, 'success');
-                        document.getElementById('successScreen').querySelector('h2').innerText = 'Треки успешно добавлены!';
-                    }
-                    
-                    // Показываем экран успеха
-                    document.getElementById('playlistSection').classList.add('hidden');
-                    const successScreen = document.getElementById('successScreen');
-                    successScreen.classList.remove('hidden');
-                    
-                    if (data.count === 0) {
-                        document.getElementById('successMessage').innerText = `Все треки уже присутствуют в плейлисте (добавлено новых треков: 0).`;
-                    } else {
-                        document.getElementById('successMessage').innerText = `Успешно добавлено новых треков в Qobuz: ${data.count}.`;
-                    }
-                    
-                    // Эффект конфетти
-                    confetti({
-                        particleCount: 150,
-                        spread: 80,
-                        origin: { y: 0.6 }
-                    });
-                } else {
-                    throw new Error(data.detail || 'Не удалось импортировать треки');
-                }
-            } catch (err) {
-                addLog(`Ошибка при импорте плейлиста: ${err.message}`, 'error');
-                alert(`Ошибка: ${err.message}`);
-            } finally {
-                importBtn.disabled = false;
-                importBtn.innerHTML = 'Создать плейлист и импортировать в Qobuz <i class="fa-solid fa-cloud-arrow-down"></i>';
-            }
-        }
-
-        // Управление темами
         function toggleThemeDropdown() {
             document.getElementById('themeDropdown').classList.toggle('hidden');
         }
 
-        // Закрытие дропдауна при клике мимо него
-        window.addEventListener('click', (e) => {
-            if (!e.target.closest('.theme-selector-container')) {
-                document.getElementById('themeDropdown').classList.add('hidden');
-            }
-        });
-
-        function setTheme(themeName) {
-            document.body.setAttribute('data-theme', themeName);
-            localStorage.setItem('selected-theme', themeName);
-            addLog(`Тема интерфейса изменена на: ${themeName}`, 'system');
+        function setTheme(theme) {
+            document.body.setAttribute('data-theme', theme === 'default' ? '' : theme);
+            localStorage.setItem('qsync-theme', theme);
+            document.getElementById('themeDropdown').classList.add('hidden');
         }
 
-        // Инициализация сохраненной темы
-        const savedTheme = localStorage.getItem('selected-theme') || 'default';
-        setTheme(savedTheme);
+        function applySavedTheme() {
+            setTheme(localStorage.getItem('qsync-theme') || 'default');
+        }
     </script>
 </body>
 </html>

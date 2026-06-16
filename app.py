@@ -13,7 +13,8 @@ import sys
 import secrets
 import sqlite3
 import hashlib
-from urllib.parse import urljoin, urlparse
+import html
+from urllib.parse import urlencode, urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Request, Response
@@ -24,6 +25,7 @@ from yandex_music import Client as YandexMusicClient
 
 # Импортируем оригинальные классы и переменные из main.py
 from main import QobuzDirect
+from music_services import PlaylistRef, ResolvedTrack, SERVICE_CATALOG, ServiceProfile, TransferResult
 
 app = FastAPI(title="Qobuz Playlist Importer")
 
@@ -42,6 +44,10 @@ LOGIN_PROFILE_ROOT = os.getenv("QSYNC_LOGIN_PROFILE_DIR") or os.path.join(APP_DI
 BROWSER_LOGIN_ENABLED = os.getenv("QSYNC_BROWSER_LOGIN_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID") or "30650571"
 SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET") or ""
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "").strip()
+SPOTIFY_SCOPES = "playlist-modify-public playlist-modify-private playlist-read-private"
 SECRET_KEY_FILE = os.getenv("QSYNC_SECRET_KEY_FILE")
 if not SECRET_KEY_FILE:
     db_dir = os.path.dirname(os.path.abspath(DB_FILE)) or APP_DIR
@@ -168,6 +174,17 @@ def init_db():
                     updated_at INTEGER NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS service_connections (
+                    session_id TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    credentials TEXT,
+                    profile_json TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (session_id, service)
+                )
+            """)
             conn.commit()
     cleanup_expired_sessions()
 
@@ -196,11 +213,13 @@ def create_session() -> str:
 
 def delete_session(session_id: str):
     if session_id:
+        db_execute("DELETE FROM service_connections WHERE session_id = ?", (session_id,))
         db_execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
 def cleanup_expired_sessions():
     cutoff = int(time.time()) - SESSION_TTL_SECONDS
     db_execute("DELETE FROM sessions WHERE updated_at < ?", (cutoff,))
+    db_execute("DELETE FROM service_connections WHERE session_id NOT IN (SELECT id FROM sessions)")
 
 def get_session(session_id: str) -> Optional[dict]:
     if not session_id:
@@ -221,6 +240,119 @@ def get_session(session_id: str) -> Optional[dict]:
         update_session_values(session_id, plaintext_updates)
     return decrypted
 
+def encode_credentials(credentials: dict) -> str:
+    return encrypt_secret(json.dumps(credentials or {}, ensure_ascii=False))
+
+def decode_credentials(value: Optional[str]) -> dict:
+    if not value:
+        return {}
+    raw = decrypt_secret(value)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        logger.error("Failed to decode service credentials JSON")
+        return {}
+
+def normalize_profile(profile: Optional[dict]) -> dict:
+    return profile if isinstance(profile, dict) else {}
+
+def upsert_service_connection(session_id: str, service: str, credentials: dict, profile: Optional[dict] = None):
+    if not session_id or not service:
+        return
+    now = int(time.time())
+    existing = db_execute(
+        "SELECT created_at FROM service_connections WHERE session_id = ? AND service = ?",
+        (session_id, service),
+        fetchone=True,
+    )
+    created_at = int(existing["created_at"]) if existing else now
+    db_execute(
+        """
+        INSERT OR REPLACE INTO service_connections (
+            session_id, service, credentials, profile_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            service,
+            encode_credentials(credentials),
+            json.dumps(normalize_profile(profile), ensure_ascii=False),
+            created_at,
+            now,
+        ),
+    )
+
+def delete_service_connection(session_id: str, service: str):
+    db_execute(
+        "DELETE FROM service_connections WHERE session_id = ? AND service = ?",
+        (session_id, service),
+    )
+
+def get_service_connection(session_id: str, service: str) -> Optional[dict]:
+    row = db_execute(
+        "SELECT * FROM service_connections WHERE session_id = ? AND service = ?",
+        (session_id, service),
+        fetchone=True,
+    )
+    if not row:
+        return None
+    try:
+        profile = json.loads(row.get("profile_json") or "{}")
+    except json.JSONDecodeError:
+        profile = {}
+    return {
+        "session_id": row["session_id"],
+        "service": row["service"],
+        "credentials": decode_credentials(row.get("credentials")),
+        "profile": normalize_profile(profile),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+def legacy_qobuz_credentials(session: dict) -> dict:
+    return {
+        "token": session.get("qobuz_token") or "",
+        "app_id": session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID,
+        "app_secret": session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET,
+        "working_app_id": session.get("qobuz_working_app_id"),
+    }
+
+def get_service_credentials(session: dict, service: str) -> dict:
+    connection = get_service_connection(session["id"], service) if session and session.get("id") else None
+    if connection:
+        return connection["credentials"]
+    if service == "qobuz":
+        return legacy_qobuz_credentials(session)
+    if service == "yandex":
+        return {"token": session.get("yandex_token") or ""}
+    return {}
+
+def migrate_legacy_session_connections(session: Optional[dict]):
+    if not session or not session.get("id"):
+        return
+    session_id = session["id"]
+    if session.get("qobuz_token") and not get_service_connection(session_id, "qobuz"):
+        upsert_service_connection(session_id, "qobuz", legacy_qobuz_credentials(session), {})
+    if session.get("yandex_token") and not get_service_connection(session_id, "yandex"):
+        upsert_service_connection(session_id, "yandex", {"token": session.get("yandex_token")}, {})
+
+def sync_legacy_connections_from_session(session_id: str):
+    row = db_execute("SELECT * FROM sessions WHERE id = ?", (session_id,), fetchone=True)
+    session = decrypt_session_row(row)
+    if not session:
+        return
+    if session.get("qobuz_token"):
+        upsert_service_connection(session_id, "qobuz", legacy_qobuz_credentials(session), {})
+    else:
+        delete_service_connection(session_id, "qobuz")
+    if session.get("yandex_token"):
+        upsert_service_connection(session_id, "yandex", {"token": session.get("yandex_token")}, {})
+    else:
+        delete_service_connection(session_id, "yandex")
+
 def set_session_cookie(response: Response, session_id: str):
     response.set_cookie(
         SESSION_COOKIE_NAME,
@@ -238,6 +370,7 @@ def get_or_create_session(request: Request, response: Response) -> dict:
         session_id = create_session()
         session = get_session(session_id)
         set_session_cookie(response, session_id)
+    migrate_legacy_session_connections(session)
     return session
 
 def get_websocket_session(websocket: WebSocket) -> dict:
@@ -258,6 +391,9 @@ RATE_LIMIT_RULES = {
     "match_ws": (10, 300),
     "yandex_auth_ws": (5, 600),
     "yandex_liked": (15, 300),
+    "service_connect": (20, 300),
+    "import_source": (30, 300),
+    "match_http": (10, 300),
 }
 
 def client_host_from_request(request: Request) -> str:
@@ -365,11 +501,14 @@ def update_session_values(session_id: str, updates: dict):
     ]
     values.extend([int(time.time()), session_id])
     db_execute(f"UPDATE sessions SET {assignments}, updated_at = ? WHERE id = ?", values)
+    if {"qobuz_token", "qobuz_app_id", "qobuz_app_secret", "qobuz_working_app_id", "yandex_token"} & set(fields):
+        sync_legacy_connections_from_session(session_id)
 
 def make_qobuz_client(session: dict) -> QobuzDirect:
-    app_id = session.get("qobuz_working_app_id") or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID
-    app_secret = session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET
-    return QobuzDirect(session.get("qobuz_token") or "", app_id, app_secret)
+    credentials = get_service_credentials(session, "qobuz")
+    app_id = credentials.get("working_app_id") or credentials.get("app_id") or SERVER_DEFAULT_APP_ID
+    app_secret = credentials.get("app_secret") or SERVER_DEFAULT_APP_SECRET
+    return QobuzDirect(credentials.get("token") or "", app_id, app_secret)
 
 init_db()
 
@@ -435,17 +574,20 @@ def get_qobuz_profile(cl: QobuzDirect, preferred_app_ids=None):
 
 def ensure_qobuz_authorized(session: dict):
     qobuz_client = make_qobuz_client(session)
+    credentials = get_service_credentials(session, "qobuz")
     profile = get_qobuz_profile(qobuz_client, [
-        session.get("qobuz_working_app_id"),
-        session.get("qobuz_app_id"),
+        credentials.get("working_app_id"),
+        credentials.get("app_id"),
     ])
     if not profile.get("authorized"):
         raise HTTPException(
             status_code=401,
             detail="Qobuz аккаунт не выбран. Вставьте token своего Qobuz аккаунта и сохраните настройки.",
         )
-    if profile.get("app_id") != session.get("qobuz_working_app_id"):
+    if profile.get("app_id") != credentials.get("working_app_id"):
         update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
+        credentials["working_app_id"] = profile["app_id"]
+    upsert_service_connection(session["id"], "qobuz", credentials, profile)
     return qobuz_client, profile
 
 CACHE_FILE = "search_cache.json"
@@ -481,11 +623,12 @@ def save_search_cache():
 load_search_cache()
 
 def get_thread_qobuz_client(session: dict) -> QobuzDirect:
-    app_id_to_use = session.get("qobuz_working_app_id") or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID
+    credentials = get_service_credentials(session, "qobuz")
+    app_id_to_use = credentials.get("working_app_id") or credentials.get("app_id") or SERVER_DEFAULT_APP_ID
     config_key = (
-        session.get("qobuz_token") or "",
+        credentials.get("token") or "",
         app_id_to_use,
-        session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET,
+        credentials.get("app_secret") or SERVER_DEFAULT_APP_SECRET,
     )
     cached_key = getattr(thread_local, "qobuz_config_key", None)
     cached_client = getattr(thread_local, "qobuz_client", None)
@@ -498,8 +641,9 @@ def get_thread_qobuz_client(session: dict) -> QobuzDirect:
     return cached_client
 
 def qobuz_cache_scope(session: dict) -> str:
-    app_id = session.get("qobuz_working_app_id") or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID
-    token = session.get("qobuz_token") or ""
+    credentials = get_service_credentials(session, "qobuz")
+    app_id = credentials.get("working_app_id") or credentials.get("app_id") or SERVER_DEFAULT_APP_ID
+    token = credentials.get("token") or ""
     return hashlib.sha256(f"{app_id}:{token}".encode("utf-8")).hexdigest()
 
 def search_cache_key(query: str, session: dict) -> str:
@@ -601,6 +745,455 @@ def search_tracks_rich_multi(cl: QobuzDirect, query: str, limit: int = 6) -> Lis
         logger.error(f"Ошибка мультипоиска для '{query}': {e}")
     return results
 
+def service_catalog_with_runtime_status():
+    services = []
+    for service in SERVICE_CATALOG:
+        item = dict(service)
+        if item["id"] == "spotify" and not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET):
+            item["enabled"] = False
+            item["status"] = "needs_config"
+            item["note"] = "Нужно задать SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET в .env."
+        services.append(item)
+    return services
+
+def service_meta(service_id: str) -> Optional[dict]:
+    return next((item for item in service_catalog_with_runtime_status() if item["id"] == service_id), None)
+
+def ensure_service_enabled(service_id: str, role: Optional[str] = None):
+    meta = service_meta(service_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Сервис не найден")
+    if role and role not in meta.get("roles", []):
+        raise HTTPException(status_code=400, detail=f"Сервис {meta['name']} не поддерживает выбранную роль")
+    if not meta.get("enabled"):
+        raise HTTPException(status_code=400, detail=meta.get("note") or "Сервис пока недоступен")
+    return meta
+
+class ManualSourceAdapter:
+    service_id = "manual"
+
+    def auth_status(self, session: dict) -> ServiceProfile:
+        return ServiceProfile(True, self.service_id, display_name="Ручной список", id="manual")
+
+    def read_tracks(self, session: dict, payload: dict) -> dict:
+        raw_tracks = payload.get("tracks")
+        if raw_tracks is not None:
+            if not isinstance(raw_tracks, list):
+                raise ValueError("Некорректный список треков")
+            tracks = normalize_track_names(raw_tracks)
+        else:
+            text = payload.get("text") or ""
+            if len(text.encode("utf-8")) > MAX_UPLOAD_BYTES:
+                raise ValueError(f"Текст слишком большой. Максимум: {MAX_UPLOAD_BYTES} байт")
+            tracks = normalize_track_names(text.splitlines())
+        return {"tracks": tracks, "playlist_name": payload.get("playlist_name") or "Импортированный список"}
+
+class YandexAdapter:
+    service_id = "yandex"
+
+    def auth_status(self, session: dict) -> ServiceProfile:
+        token = get_service_credentials(session, self.service_id).get("token") or ""
+        profile = get_yandex_profile(token)
+        return ServiceProfile(
+            bool(profile.get("authorized")),
+            self.service_id,
+            display_name=profile.get("display_name"),
+            id=str(profile.get("uid")) if profile.get("uid") else None,
+            extra=profile,
+        )
+
+    def connect(self, session: dict, payload: dict) -> dict:
+        token = (payload.get("token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="Передайте Yandex token или используйте device-code вход")
+        profile = get_yandex_profile(token)
+        if not profile.get("authorized"):
+            raise HTTPException(status_code=401, detail="Yandex token не прошел проверку")
+        update_session_values(session["id"], {"yandex_token": token})
+        upsert_service_connection(session["id"], self.service_id, {"token": token}, profile)
+        return {"status": "success", "profile": profile}
+
+    def read_tracks(self, session: dict, payload: dict) -> dict:
+        input_type = payload.get("input_type") or "url"
+        if input_type == "liked":
+            tracks, playlist_name = read_yandex_liked_tracks(session)
+            return {"tracks": tracks, "playlist_name": playlist_name}
+        if input_type == "url":
+            url = payload.get("url") or ""
+            if len(url) > MAX_YANDEX_URL_LENGTH:
+                raise ValueError(f"Ссылка длиннее {MAX_YANDEX_URL_LENGTH} символов")
+            tracks, playlist_name = parse_yandex_music_url(url, session)
+            return {"tracks": normalize_track_names(tracks), "playlist_name": playlist_name}
+        return ManualSourceAdapter().read_tracks(session, payload)
+
+class QobuzAdapter:
+    service_id = "qobuz"
+
+    def auth_status(self, session: dict) -> ServiceProfile:
+        credentials = get_service_credentials(session, self.service_id)
+        if not credentials.get("token"):
+            return ServiceProfile(False, self.service_id)
+        qobuz_client = make_qobuz_client(session)
+        profile = get_qobuz_profile(qobuz_client, [
+            credentials.get("working_app_id"),
+            credentials.get("app_id"),
+        ])
+        if profile.get("authorized"):
+            credentials["working_app_id"] = profile.get("app_id")
+            upsert_service_connection(session["id"], self.service_id, credentials, profile)
+            update_session_values(session["id"], {"qobuz_working_app_id": profile.get("app_id")})
+        return ServiceProfile(
+            bool(profile.get("authorized")),
+            self.service_id,
+            display_name=profile.get("display_name"),
+            id=str(profile.get("id")) if profile.get("id") else None,
+            extra=profile,
+        )
+
+    def connect(self, session: dict, payload: dict) -> dict:
+        method = payload.get("method") or "token"
+        app_id = (payload.get("app_id") or get_service_credentials(session, self.service_id).get("app_id") or SERVER_DEFAULT_APP_ID).strip()
+        app_secret = (payload.get("app_secret") or get_service_credentials(session, self.service_id).get("app_secret") or SERVER_DEFAULT_APP_SECRET).strip()
+
+        if method == "password":
+            email = (payload.get("email") or "").strip()
+            password = payload.get("password") or ""
+            if not email or not password or len(email) > 254 or len(password) > 256:
+                raise HTTPException(status_code=400, detail="Введите email и пароль Qobuz")
+            password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
+            app_ids = unique_values([app_id] + get_qobuz_web_app_ids() + QOBUZ_APP_ID_CANDIDATES)
+            last_error = None
+            for candidate_app_id in app_ids:
+                qobuz_client = QobuzDirect("", candidate_app_id, app_secret)
+                login_result = qobuz_client.login(email, password_hash, candidate_app_id, True)
+                if isinstance(login_result, dict) and login_result.get("user_auth_token"):
+                    token = login_result["user_auth_token"]
+                    credentials = {
+                        "token": token,
+                        "app_id": candidate_app_id,
+                        "app_secret": app_secret,
+                        "working_app_id": candidate_app_id,
+                    }
+                    update_session_values(session["id"], {
+                        "qobuz_token": token,
+                        "qobuz_app_id": candidate_app_id,
+                        "qobuz_app_secret": app_secret,
+                        "qobuz_working_app_id": candidate_app_id,
+                    })
+                    profile = self.auth_status(get_session(session["id"])).to_dict()
+                    upsert_service_connection(session["id"], self.service_id, credentials, profile)
+                    return {"status": "success", "profile": profile}
+                if isinstance(login_result, dict):
+                    last_error = login_result.get("message") or login_result.get("detail") or login_result.get("status")
+            raise HTTPException(status_code=401, detail=last_error or "Не удалось войти в Qobuz")
+
+        token = (payload.get("token") or get_service_credentials(session, self.service_id).get("token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="Передайте Qobuz token")
+        credentials = {
+            "token": token,
+            "app_id": app_id,
+            "app_secret": app_secret,
+            "working_app_id": None,
+        }
+        update_session_values(session["id"], {
+            "qobuz_token": token,
+            "qobuz_app_id": app_id,
+            "qobuz_app_secret": app_secret,
+            "qobuz_working_app_id": None,
+        })
+        upsert_service_connection(session["id"], self.service_id, credentials, {})
+        profile = self.auth_status(get_session(session["id"])).to_dict()
+        return {"status": "success", "profile": profile}
+
+    def list_playlists(self, session: dict) -> List[PlaylistRef]:
+        qobuz_client, _profile = ensure_qobuz_authorized(session)
+        res = qobuz_client._request("playlist/getUserPlaylists", {"limit": 100})
+        items = []
+        playlist_items = (res.get("playlists", {}) or {}).get("items", []) if isinstance(res, dict) else []
+        for item in playlist_items:
+            items.append(PlaylistRef(
+                id=str(item.get("id")),
+                name=item.get("name") or "Без названия",
+                tracks_count=int(item.get("tracks_count") or item.get("tracks", {}).get("total") or 0),
+            ))
+        return items
+
+    def search_track(self, session: dict, query: str) -> Optional[ResolvedTrack]:
+        result = search_track_rich(make_qobuz_client(session), query, session)
+        if not result:
+            return None
+        return ResolvedTrack(
+            id=str(result["id"]),
+            title=result.get("title") or "",
+            artist=result.get("artist") or "",
+            album=result.get("album") or "",
+            cover=result.get("cover"),
+            duration=int(result.get("duration") or 0),
+            hires=bool(result.get("hires")),
+        )
+
+    def search_tracks(self, session: dict, query: str, limit: int = 6) -> List[ResolvedTrack]:
+        return [
+            ResolvedTrack(
+                id=str(item["id"]),
+                title=item.get("title") or "",
+                artist=item.get("artist") or "",
+                album=item.get("album") or "",
+                cover=item.get("cover"),
+                duration=int(item.get("duration") or 0),
+                hires=bool(item.get("hires")),
+            )
+            for item in search_tracks_rich_multi(make_qobuz_client(session), query, limit)
+        ]
+
+    def create_playlist(self, session: dict, name: str) -> str:
+        qobuz_client, _profile = ensure_qobuz_authorized(session)
+        playlist_id = qobuz_client.create_playlist(name)
+        if not playlist_id:
+            raise HTTPException(status_code=500, detail="Не удалось создать плейлист в Qobuz")
+        return str(playlist_id)
+
+    def add_tracks(self, session: dict, playlist_id: str, track_ids: List[str]) -> bool:
+        qobuz_client, _profile = ensure_qobuz_authorized(session)
+        success = True
+        for i in range(0, len(track_ids), 100):
+            chunk = [int(track_id) for track_id in track_ids[i:i+100]]
+            if not qobuz_client.add_tracks_to_playlist(playlist_id, chunk):
+                success = False
+        return success
+
+class SpotifyAdapter:
+    service_id = "spotify"
+    auth_base = "https://accounts.spotify.com"
+    api_base = "https://api.spotify.com/v1"
+
+    def configured(self) -> bool:
+        return bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET)
+
+    def redirect_uri(self, request: Optional[Request] = None) -> str:
+        if SPOTIFY_REDIRECT_URI:
+            return SPOTIFY_REDIRECT_URI
+        if request:
+            return str(request.url_for("spotify_callback"))
+        return ""
+
+    def make_state(self, session_id: str) -> str:
+        nonce = secrets.token_urlsafe(16)
+        payload = f"{session_id}.{nonce}"
+        sig = base64.urlsafe_b64encode(make_hmac(payload.encode("utf-8"))[:16]).decode("ascii").rstrip("=")
+        return f"{payload}.{sig}"
+
+    def verify_state(self, state: str, session_id: str) -> bool:
+        try:
+            state_session_id, nonce, sig = state.split(".", 2)
+        except ValueError:
+            return False
+        if state_session_id != session_id:
+            return False
+        payload = f"{state_session_id}.{nonce}"
+        expected = base64.urlsafe_b64encode(make_hmac(payload.encode("utf-8"))[:16]).decode("ascii").rstrip("=")
+        return hmac.compare_digest(sig, expected)
+
+    def auth_url(self, session: dict, request: Request) -> str:
+        if not self.configured():
+            raise HTTPException(status_code=400, detail="Spotify не настроен: задайте SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET")
+        params = {
+            "client_id": SPOTIFY_CLIENT_ID,
+            "response_type": "code",
+            "redirect_uri": self.redirect_uri(request),
+            "scope": SPOTIFY_SCOPES,
+            "state": self.make_state(session["id"]),
+        }
+        return f"{self.auth_base}/authorize?{urlencode(params)}"
+
+    def exchange_code(self, session: dict, code: str, request: Request) -> dict:
+        if not self.configured():
+            raise HTTPException(status_code=400, detail="Spotify не настроен")
+        response = requests.post(
+            f"{self.auth_base}/api/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": self.redirect_uri(request),
+            },
+            auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET),
+            timeout=(5, 20),
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Spotify token exchange failed: {response.text}")
+        token_data = response.json()
+        credentials = {
+            "access_token": token_data.get("access_token"),
+            "refresh_token": token_data.get("refresh_token"),
+            "expires_at": int(time.time()) + int(token_data.get("expires_in") or 3600) - 60,
+            "token_type": token_data.get("token_type") or "Bearer",
+        }
+        profile = self.fetch_profile(credentials)
+        upsert_service_connection(session["id"], self.service_id, credentials, profile)
+        return profile
+
+    def refresh_credentials(self, session: dict, credentials: dict) -> dict:
+        if not credentials.get("refresh_token"):
+            raise HTTPException(status_code=401, detail="Spotify refresh token отсутствует")
+        if int(credentials.get("expires_at") or 0) > int(time.time()):
+            return credentials
+        response = requests.post(
+            f"{self.auth_base}/api/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": credentials["refresh_token"],
+            },
+            auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET),
+            timeout=(5, 20),
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=401, detail="Не удалось обновить Spotify token")
+        token_data = response.json()
+        credentials["access_token"] = token_data.get("access_token")
+        credentials["expires_at"] = int(time.time()) + int(token_data.get("expires_in") or 3600) - 60
+        if token_data.get("refresh_token"):
+            credentials["refresh_token"] = token_data["refresh_token"]
+        connection = get_service_connection(session["id"], self.service_id) or {}
+        upsert_service_connection(session["id"], self.service_id, credentials, connection.get("profile", {}))
+        return credentials
+
+    def request(self, session: dict, method: str, path: str, **kwargs):
+        credentials = get_service_credentials(session, self.service_id)
+        if not credentials.get("access_token"):
+            raise HTTPException(status_code=401, detail="Spotify аккаунт не подключен")
+        credentials = self.refresh_credentials(session, credentials)
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {credentials['access_token']}"
+        response = requests.request(method, f"{self.api_base}{path}", headers=headers, timeout=(5, 25), **kwargs)
+        if response.status_code == 204:
+            return {}
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=f"Spotify API error: {response.text}")
+        return response.json()
+
+    def fetch_profile(self, credentials: dict) -> dict:
+        response = requests.get(
+            f"{self.api_base}/me",
+            headers={"Authorization": f"Bearer {credentials['access_token']}"},
+            timeout=(5, 20),
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=401, detail="Не удалось получить профиль Spotify")
+        data = response.json()
+        return {
+            "authorized": True,
+            "service": self.service_id,
+            "display_name": data.get("display_name") or data.get("id"),
+            "id": data.get("id"),
+        }
+
+    def auth_status(self, session: dict) -> ServiceProfile:
+        connection = get_service_connection(session["id"], self.service_id)
+        if not connection or not connection["credentials"].get("access_token"):
+            return ServiceProfile(False, self.service_id)
+        try:
+            credentials = self.refresh_credentials(session, connection["credentials"])
+            profile = self.fetch_profile(credentials)
+            upsert_service_connection(session["id"], self.service_id, credentials, profile)
+            return ServiceProfile(True, self.service_id, profile.get("display_name"), profile.get("id"), extra=profile)
+        except Exception as exc:
+            return ServiceProfile(False, self.service_id, detail=str(exc))
+
+    def connect(self, session: dict, payload: dict, request: Request) -> dict:
+        return {"status": "auth_required", "authorization_url": self.auth_url(session, request)}
+
+    def list_playlists(self, session: dict) -> List[PlaylistRef]:
+        playlists = []
+        path = "/me/playlists?limit=50"
+        while path:
+            data = self.request(session, "GET", path)
+            for item in data.get("items", []):
+                playlists.append(PlaylistRef(
+                    id=item.get("id"),
+                    name=item.get("name") or "Без названия",
+                    tracks_count=int((item.get("tracks") or {}).get("total") or 0),
+                ))
+            next_url = data.get("next")
+            path = next_url.replace(self.api_base, "") if next_url else None
+        return playlists
+
+    def search_track(self, session: dict, query: str) -> Optional[ResolvedTrack]:
+        data = self.request(session, "GET", "/search", params={"q": query, "type": "track", "limit": 1})
+        items = ((data.get("tracks") or {}).get("items") or [])
+        if not items:
+            return None
+        return self.spotify_track_to_resolved(items[0])
+
+    def search_tracks(self, session: dict, query: str, limit: int = 6) -> List[ResolvedTrack]:
+        data = self.request(session, "GET", "/search", params={"q": query, "type": "track", "limit": limit})
+        return [self.spotify_track_to_resolved(item) for item in ((data.get("tracks") or {}).get("items") or [])]
+
+    def spotify_track_to_resolved(self, track: dict) -> ResolvedTrack:
+        album = track.get("album") or {}
+        images = album.get("images") or []
+        artists = ", ".join(artist.get("name") or "" for artist in track.get("artists", []) if artist.get("name"))
+        return ResolvedTrack(
+            id=track.get("id"),
+            uri=track.get("uri"),
+            title=track.get("name") or "",
+            artist=artists,
+            album=album.get("name") or "",
+            cover=images[-1].get("url") if images else None,
+            duration=int((track.get("duration_ms") or 0) / 1000),
+        )
+
+    def create_playlist(self, session: dict, name: str) -> str:
+        profile = self.auth_status(session)
+        if not profile.authorized or not profile.id:
+            raise HTTPException(status_code=401, detail="Spotify аккаунт не подключен")
+        data = self.request(
+            session,
+            "POST",
+            f"/users/{profile.id}/playlists",
+            json={"name": name, "public": False},
+        )
+        return data.get("id")
+
+    def add_tracks(self, session: dict, playlist_id: str, track_ids: List[str]) -> bool:
+        uris = [track_id if str(track_id).startswith("spotify:track:") else f"spotify:track:{track_id}" for track_id in track_ids]
+        for i in range(0, len(uris), 100):
+            self.request(session, "POST", f"/playlists/{playlist_id}/tracks", json={"uris": uris[i:i+100]})
+        return True
+
+SERVICE_ADAPTERS = {
+    "manual": ManualSourceAdapter(),
+    "yandex": YandexAdapter(),
+    "qobuz": QobuzAdapter(),
+    "spotify": SpotifyAdapter(),
+}
+
+def get_adapter(service_id: str):
+    adapter = SERVICE_ADAPTERS.get(service_id)
+    if not adapter:
+        ensure_service_enabled(service_id)
+        raise HTTPException(status_code=400, detail="Сервис пока не реализован")
+    return adapter
+
+def read_yandex_liked_tracks(session: dict):
+    yandex_token = get_service_credentials(session, "yandex").get("token") or session.get("yandex_token") or ""
+    if not yandex_token:
+        raise ValueError("Для импорта 'Мне нравится' необходимо авторизоваться в Яндекс.Музыке.")
+    yandex_client = YandexMusicClient(yandex_token).init()
+    tracks_list = yandex_client.users_likes_tracks()
+    if not tracks_list or not tracks_list.tracks_ids:
+        return [], "Мне нравится"
+    track_names = []
+    for i in range(0, len(tracks_list.tracks_ids), 100):
+        chunk_ids = tracks_list.tracks_ids[i:i+100]
+        tracks = yandex_client.tracks(chunk_ids)
+        for track in tracks:
+            if not track:
+                continue
+            artists = ", ".join([artist.name for artist in track.artists])
+            track_names.append(f"{artists} - {track.title}")
+    return normalize_track_names(track_names), "Мне нравится"
+
 # Pydantic модели
 class ConfigData(BaseModel):
     token: str
@@ -620,11 +1213,127 @@ class PlaylistData(BaseModel):
 
 class SingleSearchQuery(BaseModel):
     query: str
+    destination: Optional[str] = "qobuz"
 
 class UrlParseRequest(BaseModel):
     url: str
 
+class ServiceConnectRequest(BaseModel):
+    method: Optional[str] = None
+    token: Optional[str] = None
+    app_id: Optional[str] = None
+    app_secret: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
+
+class ImportSourceRequest(BaseModel):
+    source: str
+    input_type: Optional[str] = "manual"
+    url: Optional[str] = None
+    text: Optional[str] = None
+    tracks: Optional[List[str]] = None
+    playlist_name: Optional[str] = None
+
+class MatchRequest(BaseModel):
+    destination: str = "qobuz"
+    tracks: List[str]
+
+class TransferData(BaseModel):
+    destination: str = "qobuz"
+    name: Optional[str] = None
+    playlist_id: Optional[str] = None
+    track_ids: List[str]
+    order: Optional[str] = "original"
+
 # Эндпоинты
+
+async def match_tracks_for_destination(session: dict, destination: str, tracks: List[str]):
+    ensure_service_enabled(destination, "destination")
+    adapter = get_adapter(destination)
+    if not hasattr(adapter, "search_track"):
+        raise HTTPException(status_code=400, detail="Сервис назначения не поддерживает поиск треков")
+    queries = normalize_track_names(tracks)
+    if not queries:
+        return {"total": 0, "matched": 0, "matches": []}
+    concurrency = max(1, min(MATCH_CONCURRENCY, len(queries)))
+    sem = asyncio.Semaphore(concurrency)
+
+    async def worker(idx, query):
+        async with sem:
+            track = await asyncio.to_thread(adapter.search_track, session, query)
+            return {
+                "index": idx,
+                "original": query,
+                "status": "found" if track else "not_found",
+                "match": track.to_dict() if track else None,
+            }
+
+    results = await asyncio.gather(*[worker(idx, query) for idx, query in enumerate(queries)])
+    if destination == "qobuz":
+        await asyncio.to_thread(save_search_cache)
+    return {
+        "total": len(queries),
+        "matched": sum(1 for item in results if item["match"]),
+        "matches": sorted(results, key=lambda item: item["index"]),
+    }
+
+def transfer_tracks_sync(session: dict, data: TransferData) -> dict:
+    ensure_service_enabled(data.destination, "destination")
+    adapter = get_adapter(data.destination)
+    track_ids = [str(track_id).strip() for track_id in data.track_ids if str(track_id).strip()]
+    if not track_ids:
+        raise HTTPException(status_code=400, detail="Список ID треков пуст")
+    if len(track_ids) > MAX_TRACKS_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"Слишком много треков. Максимум: {MAX_TRACKS_PER_REQUEST}")
+    if data.destination == "qobuz":
+        try:
+            track_ids = [str(int(track_id)) for track_id in track_ids if int(track_id) > 0]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Список ID треков содержит некорректные значения")
+    if data.order == "reverse":
+        track_ids = list(reversed(track_ids))
+
+    playlist_name = validate_playlist_name(data.name)
+    playlist_id = (data.playlist_id or "").strip()
+    is_new = False
+    if not playlist_id:
+        if not playlist_name:
+            raise HTTPException(status_code=400, detail="Название плейлиста не указано")
+        playlist_id = adapter.create_playlist(session, playlist_name)
+        is_new = True
+    elif data.destination == "qobuz":
+        qobuz_client, _profile = ensure_qobuz_authorized(session)
+        existing_ids = set(get_playlist_track_ids(qobuz_client, playlist_id))
+        track_ids = [track_id for track_id in track_ids if int(track_id) not in existing_ids]
+        if not track_ids:
+            account = adapter.auth_status(session).to_dict()
+            return TransferResult(
+                status="success",
+                playlist_id=playlist_id,
+                count=0,
+                is_new=False,
+                detail="Все треки уже есть в плейлисте (новых треков нет)",
+                account=account,
+            ).to_dict()
+
+    success = adapter.add_tracks(session, playlist_id, track_ids)
+    account = adapter.auth_status(session).to_dict()
+    if success:
+        return TransferResult(
+            status="success",
+            playlist_id=playlist_id,
+            count=len(track_ids),
+            is_new=is_new,
+            account=account,
+        ).to_dict()
+    return TransferResult(
+        status="partial_success",
+        playlist_id=playlist_id,
+        count=len(track_ids),
+        is_new=is_new,
+        detail="Часть треков не удалось добавить",
+        account=account,
+    ).to_dict()
 
 @app.get("/")
 async def get_index(request: Request):
@@ -661,20 +1370,135 @@ def get_yandex_profile(token: str = ""):
         logger.error(f"Failed to fetch Yandex profile: {e}")
         return {"authorized": False}
 
+@app.get("/api/services")
+async def get_services():
+    return {"services": service_catalog_with_runtime_status()}
+
+@app.get("/api/connections")
+async def get_connections(request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    result = {}
+    for meta in service_catalog_with_runtime_status():
+        service_id = meta["id"]
+        adapter = SERVICE_ADAPTERS.get(service_id)
+        if adapter and meta.get("enabled"):
+            try:
+                profile = await asyncio.to_thread(adapter.auth_status, session)
+                result[service_id] = profile.to_dict()
+            except Exception as exc:
+                result[service_id] = {"authorized": False, "service": service_id, "detail": str(exc)}
+        else:
+            result[service_id] = {
+                "authorized": service_id == "manual",
+                "service": service_id,
+                "detail": meta.get("note"),
+            }
+    return {"connections": result}
+
+@app.post("/api/connections/{service}/connect")
+async def connect_service(service: str, data: ServiceConnectRequest, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    enforce_http_rate_limit("service_connect", request, session)
+    ensure_service_enabled(service)
+    adapter = get_adapter(service)
+    if service == "spotify":
+        return adapter.connect(session, data.dict(), request)
+    if not hasattr(adapter, "connect"):
+        raise HTTPException(status_code=400, detail="Для этого сервиса пока нет универсального входа")
+    return await asyncio.to_thread(adapter.connect, session, data.dict())
+
+@app.get("/api/connections/spotify/callback", name="spotify_callback")
+async def spotify_callback(
+    request: Request,
+    response: Response,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    session = get_or_create_session(request, response)
+    adapter = SERVICE_ADAPTERS["spotify"]
+    if error:
+        raise HTTPException(status_code=400, detail=f"Spotify OAuth error: {error}")
+    if not code or not state or not adapter.verify_state(state, session["id"]):
+        raise HTTPException(status_code=400, detail="Некорректный Spotify OAuth callback")
+    profile = await asyncio.to_thread(adapter.exchange_code, session, code, request)
+    display_name = html.escape(profile.get("display_name") or "Spotify")
+    return HTMLResponse(f"""
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Spotify подключен</title></head>
+<body style="font-family: sans-serif; background: #0b1020; color: white; display: grid; place-items: center; min-height: 100vh;">
+  <main style="text-align: center;">
+    <h1>Spotify подключен</h1>
+    <p>Аккаунт: {display_name}</p>
+    <a href="/" style="color: #22d3ee;">Вернуться к переносу</a>
+    <script>setTimeout(() => location.href = '/', 900);</script>
+  </main>
+</body>
+</html>
+""")
+
+@app.post("/api/connections/{service}/disconnect")
+async def disconnect_service(service: str, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    delete_service_connection(session["id"], service)
+    if service == "qobuz":
+        update_session_values(session["id"], {"qobuz_token": "", "qobuz_working_app_id": None})
+    elif service == "yandex":
+        update_session_values(session["id"], {"yandex_token": None})
+    return {"status": "success"}
+
+@app.post("/api/import/source")
+async def import_source(data: ImportSourceRequest, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    enforce_http_rate_limit("import_source", request, session)
+    ensure_service_enabled(data.source, "source")
+    adapter = get_adapter(data.source)
+    try:
+        result = await asyncio.to_thread(adapter.read_tracks, session, data.dict())
+        result["tracks"] = normalize_track_names(result.get("tracks") or [])
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/match")
+async def match_tracks(data: MatchRequest, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    enforce_http_rate_limit("match_http", request, session)
+    return await match_tracks_for_destination(session, data.destination, data.tracks)
+
+@app.get("/api/destinations/{service}/playlists")
+async def list_destination_playlists(service: str, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    ensure_service_enabled(service, "destination")
+    adapter = get_adapter(service)
+    if not hasattr(adapter, "list_playlists"):
+        raise HTTPException(status_code=400, detail="Сервис не поддерживает список плейлистов")
+    playlists = await asyncio.to_thread(adapter.list_playlists, session)
+    return {"playlists": [playlist.to_dict() for playlist in playlists]}
+
+@app.post("/api/transfer")
+async def transfer_tracks(data: TransferData, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    enforce_http_rate_limit("playlist_write", request, session)
+    return await asyncio.to_thread(transfer_tracks_sync, session, data)
+
 @app.get("/api/config")
 async def get_config(request: Request, response: Response):
     session = get_or_create_session(request, response)
+    qobuz_credentials = get_service_credentials(session, "qobuz")
     qobuz_client = make_qobuz_client(session)
     profile = await asyncio.to_thread(get_qobuz_profile, qobuz_client, [
-        session.get("qobuz_working_app_id"),
-        session.get("qobuz_app_id"),
+        qobuz_credentials.get("working_app_id"),
+        qobuz_credentials.get("app_id"),
     ])
-    if profile.get("authorized") and profile.get("app_id") != session.get("qobuz_working_app_id"):
+    if profile.get("authorized") and profile.get("app_id") != qobuz_credentials.get("working_app_id"):
         update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
-    yandex_profile = await asyncio.to_thread(get_yandex_profile, session.get("yandex_token") or "")
+    yandex_token = get_service_credentials(session, "yandex").get("token") or session.get("yandex_token") or ""
+    yandex_profile = await asyncio.to_thread(get_yandex_profile, yandex_token)
     return {
-        "has_qobuz_token": bool(session.get("qobuz_token")),
-        "app_id": session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID,
+        "has_qobuz_token": bool(qobuz_credentials.get("token")),
+        "app_id": qobuz_credentials.get("app_id") or SERVER_DEFAULT_APP_ID,
         "browser_login_enabled": BROWSER_LOGIN_ENABLED,
         "profile": profile,
         "yandex_profile": yandex_profile
@@ -685,9 +1509,10 @@ async def save_config(data: ConfigData, request: Request, response: Response):
     session = get_or_create_session(request, response)
     enforce_http_rate_limit("config_save", request, session)
     try:
+        qobuz_credentials = get_service_credentials(session, "qobuz")
         app_id = data.app_id.strip() or SERVER_DEFAULT_APP_ID
-        token = data.token.strip() or session.get("qobuz_token") or ""
-        app_secret = data.app_secret.strip() or session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET
+        token = data.token.strip() or qobuz_credentials.get("token") or ""
+        app_secret = data.app_secret.strip() or qobuz_credentials.get("app_secret") or SERVER_DEFAULT_APP_SECRET
         update_session_values(session["id"], {
             "qobuz_token": token,
             "qobuz_app_id": app_id,
@@ -894,7 +1719,7 @@ def parse_yandex_music_url(url: str, session: dict):
         raise ValueError("Поддерживаются только ссылки music.yandex.ru")
     
     # Initialize client (guest or token)
-    yandex_token = session.get("yandex_token") or ""
+    yandex_token = get_service_credentials(session, "yandex").get("token") or session.get("yandex_token") or ""
     try:
         if yandex_token:
             yandex_client = YandexMusicClient(yandex_token).init()
@@ -1090,27 +1915,22 @@ async def search_single(data: SingleSearchQuery, request: Request, response: Res
         query = validate_query_text(data.query)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    results = await asyncio.to_thread(search_tracks_rich_multi, make_qobuz_client(session), query)
-    return {"results": results}
+    destination = data.destination or "qobuz"
+    ensure_service_enabled(destination, "destination")
+    adapter = get_adapter(destination)
+    if hasattr(adapter, "search_tracks"):
+        results = await asyncio.to_thread(adapter.search_tracks, session, query, 6)
+    else:
+        result = await asyncio.to_thread(adapter.search_track, session, query)
+        results = [result] if result else []
+    return {"results": [track.to_dict() for track in results]}
 
 @app.get("/api/qobuz/playlists")
 async def get_qobuz_playlists(request: Request, response: Response):
     session = get_or_create_session(request, response)
     try:
-        qobuz_client, _profile = await asyncio.to_thread(ensure_qobuz_authorized, session)
-            
-        params = {"limit": 100}
-        res = await asyncio.to_thread(qobuz_client._request, "playlist/getUserPlaylists", params)
-        if "playlists" in res and "items" in res["playlists"]:
-            items = []
-            for item in res["playlists"]["items"]:
-                items.append({
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "tracks_count": item.get("tracks_count")
-                })
-            return {"playlists": items}
-        return {"playlists": []}
+        playlists = await asyncio.to_thread(SERVICE_ADAPTERS["qobuz"].list_playlists, session)
+        return {"playlists": [playlist.to_dict() for playlist in playlists]}
     except HTTPException:
         raise
     except Exception as e:
@@ -1238,6 +2058,13 @@ async def websocket_match(websocket: WebSocket):
             if not isinstance(raw_tracks, list):
                 raise ValueError("Некорректный список треков")
             queries = normalize_track_names(raw_tracks)
+            destination = req.get("destination") or "qobuz"
+            ensure_service_enabled(destination, "destination")
+            adapter = get_adapter(destination)
+        except HTTPException as exc:
+            await websocket.send_json({"type": "error", "message": exc.detail})
+            await websocket.close(code=1003)
+            return
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             await websocket.send_json({"type": "error", "message": str(exc)})
             await websocket.close(code=1003)
@@ -1256,8 +2083,8 @@ async def websocket_match(websocket: WebSocket):
         
         async def worker(idx, query):
             async with sem:
-                # Выполняем блокирующий поиск в отдельном потоке
-                track_info = await asyncio.to_thread(search_track_rich_thread, query, session)
+                track = await asyncio.to_thread(adapter.search_track, session, query)
+                track_info = track.to_dict() if track else None
                 return idx, query, track_info
                 
         # Создаем все задачи параллельно
@@ -1287,7 +2114,7 @@ async def websocket_match(websocket: WebSocket):
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            if processed_count:
+            if processed_count and destination == "qobuz":
                 await asyncio.to_thread(save_search_cache)
             raise ex
             
@@ -1296,7 +2123,7 @@ async def websocket_match(websocket: WebSocket):
             "total": total,
             "matched": matched_count
         })
-        if processed_count:
+        if processed_count and destination == "qobuz":
             await asyncio.to_thread(save_search_cache)
     except WebSocketDisconnect:
         logger.info("Пользователь отключился от WebSocket сопоставления")
@@ -1317,27 +2144,9 @@ def yandex_logout(request: Request, response: Response):
 def parse_yandex_liked(request: Request, response: Response):
     session = get_or_create_session(request, response)
     enforce_http_rate_limit("yandex_liked", request, session)
-    yandex_token = session.get("yandex_token") or ""
-    if not yandex_token:
-        raise HTTPException(status_code=400, detail="Для импорта 'Мне нравится' необходимо авторизоваться в Яндекс.Музыке.")
     try:
-        yandex_client = YandexMusicClient(yandex_token).init()
-        tracks_list = yandex_client.users_likes_tracks()
-        if not tracks_list or not tracks_list.tracks_ids:
-            return {"tracks": [], "playlist_name": "Мне нравится"}
-            
-        track_names = []
-        for i in range(0, len(tracks_list.tracks_ids), 100):
-            chunk_ids = tracks_list.tracks_ids[i:i+100]
-            tracks = yandex_client.tracks(chunk_ids)
-            for track in tracks:
-                if not track:
-                    continue
-                artists = ", ".join([a.name for a in track.artists])
-                track_names.append(f"{artists} - {track.title}")
-                
-        track_names = normalize_track_names(track_names)
-        return {"tracks": track_names, "playlist_name": "Мне нравится"}
+        track_names, playlist_name = read_yandex_liked_tracks(session)
+        return {"tracks": track_names, "playlist_name": playlist_name}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

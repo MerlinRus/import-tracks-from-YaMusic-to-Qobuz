@@ -1,30 +1,29 @@
 # QobuzSync
 
-Web-сервис для переноса и синхронизации треков из Яндекс.Музыки в плейлисты Qobuz.
+Web-сервис для переноса и синхронизации треков между музыкальными сервисами. Сейчас стабильно поддерживается перенос из Яндекс.Музыки/ручного списка в Qobuz, добавлен каркас мультисервисных адаптеров и beta-направление в Spotify.
 
 ## Возможности
 
+- route-pipeline UI: источник -> назначение -> треки -> совпадения -> перенос;
 - загрузка списка треков из файла, текстового поля или ссылки Яндекс.Музыки;
 - импорт треков по ссылкам Яндекс.Музыки: трек, альбом, плейлист, лайкнутые треки, артист;
 - авторизация Яндекс.Музыки через device code;
 - авторизация Qobuz по email/паролю с сохранением token в пользовательской сессии;
-- поиск соответствий треков в Qobuz через WebSocket с прогрессом;
+- поиск соответствий треков в Qobuz или Spotify;
 - ручной выбор соответствия, если автоматический поиск не нашел трек;
 - создание нового плейлиста Qobuz или добавление в существующий;
+- создание нового плейлиста Spotify или добавление в существующий;
 - пропуск дублей при добавлении в существующий плейлист;
-- отдельные Qobuz/Yandex аккаунты для каждого посетителя через cookie-сессии;
+- отдельные Qobuz/Yandex/Spotify подключения для каждого посетителя через cookie-сессии;
 - локальный кэш результатов поиска Qobuz.
 
 ## Как Работают Пользовательские Сессии
 
 В web-режиме `.env` больше не хранит аккаунт конкретного пользователя.
 
-При первом заходе сервис выдает браузеру cookie `qsync_sid`. По этому идентификатору в SQLite-файле `qobuzsync.db` хранятся токены именно этого посетителя:
+При первом заходе сервис выдает браузеру cookie `qsync_sid`. По этому идентификатору в SQLite-файле `qobuzsync.db` хранятся подключения именно этого посетителя.
 
-- `qobuz_token`;
-- выбранные `qobuz_app_id` и `qobuz_app_secret`;
-- рабочий `qobuz_working_app_id`;
-- `yandex_token`.
+Новая таблица `service_connections` хранит `service`, зашифрованные `credentials` и профиль подключения. Старые поля `qobuz_*` и `yandex_token` оставлены для совместимости и мигрируются в `service_connections` при чтении сессии.
 
 Это значит, что пользователь A и пользователь B на `qobuz.rentalall.ru` видят свои аккаунты, пока у них разные браузеры, cookie или сессии. Токены не возвращаются обратно во frontend через `/api/config`; UI получает только флаги авторизации и профиль.
 
@@ -62,6 +61,9 @@ source .venv/bin/activate
 ```env
 QOBUZ_APP_ID=30650571
 QOBUZ_APP_SECRET=
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
+SPOTIFY_REDIRECT_URI=
 QSYNC_DB_PATH=qobuzsync.db
 QSYNC_COOKIE_SECURE=false
 QSYNC_LOGIN_PROFILE_DIR=.qobuz_login_profiles
@@ -80,6 +82,8 @@ QSYNC_SEARCH_NEGATIVE_CACHE_TTL=3600
 ```
 
 `QOBUZ_APP_ID` и `QOBUZ_APP_SECRET` используются как серверные значения по умолчанию. Пользователь может заменить их в форме Qobuz в своей сессии.
+
+`SPOTIFY_CLIENT_ID` и `SPOTIFY_CLIENT_SECRET` нужны для Spotify OAuth. `SPOTIFY_REDIRECT_URI` должен совпадать с Redirect URI в Spotify Developer Dashboard, например `https://qobuz.rentalall.ru/api/connections/spotify/callback`. Если Spotify-переменные пустые, Spotify будет показан в UI как требующий настройки.
 
 `QSYNC_DB_PATH` задает путь к SQLite-базе с пользовательскими сессиями. Этот файл содержит токены пользователей, поэтому его нельзя коммитить, отдавать через nginx или класть в публичные бэкапы.
 
@@ -104,6 +108,24 @@ QSYNC_SEARCH_NEGATIVE_CACHE_TTL=3600
 После успешного входа UI показывает аккаунт назначения: имя и ID пользователя Qobuz. Именно в этот аккаунт будут создаваться плейлисты и добавляться треки.
 
 Token-вход оставлен в раскрытом блоке "Расширенный вход" как запасной вариант для отладки.
+
+## Вход В Spotify
+
+Создайте приложение в Spotify Developer Dashboard и добавьте Redirect URI:
+
+```text
+https://qobuz.rentalall.ru/api/connections/spotify/callback
+```
+
+В `.env` укажите:
+
+```env
+SPOTIFY_CLIENT_ID=...
+SPOTIFY_CLIENT_SECRET=...
+SPOTIFY_REDIRECT_URI=https://qobuz.rentalall.ru/api/connections/spotify/callback
+```
+
+Запрашиваемые scopes: `playlist-modify-public`, `playlist-modify-private`, `playlist-read-private`. Они нужны для списка плейлистов, создания плейлиста и добавления треков.
 
 ## Браузерный Вход И Капча
 
@@ -146,6 +168,9 @@ QSYNC_BROWSER_RUNTIME_DIR=/var/lib/qobuzsync
 QSYNC_BROWSER_LOGIN_ENABLED=false
 QSYNC_SECRET_KEY=replace-with-long-random-secret
 QSYNC_SECRET_KEY_FILE=/var/lib/qobuzsync/.qsync_secret
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
+SPOTIFY_REDIRECT_URI=https://qobuz.rentalall.ru/api/connections/spotify/callback
 ```
 
 Создайте директорию для базы и браузерных профилей, затем отдайте ее пользователю сервиса:
