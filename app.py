@@ -47,7 +47,7 @@ SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET") or ""
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "").strip()
-SPOTIFY_SCOPES = "playlist-modify-public playlist-modify-private playlist-read-private"
+SPOTIFY_SCOPES = "user-read-private user-read-email playlist-modify-public playlist-modify-private playlist-read-private"
 SECRET_KEY_FILE = os.getenv("QSYNC_SECRET_KEY_FILE")
 if not SECRET_KEY_FILE:
     db_dir = os.path.dirname(os.path.abspath(DB_FILE)) or APP_DIR
@@ -1007,6 +1007,21 @@ class SpotifyAdapter:
         }
         return f"{self.auth_base}/authorize?{urlencode(params)}"
 
+    def response_error_detail(self, response: requests.Response, fallback: str) -> str:
+        message = ""
+        try:
+            data = response.json()
+            error = data.get("error")
+            if isinstance(error, dict):
+                message = error.get("message") or ""
+            elif isinstance(error, str):
+                message = data.get("error_description") or error
+            if not message:
+                message = data.get("message") or data.get("error_description") or ""
+        except ValueError:
+            message = response.text.strip()[:300]
+        return f"{fallback}: HTTP {response.status_code}" + (f" - {message}" if message else "")
+
     def exchange_code(self, session: dict, code: str, request: Request) -> dict:
         if not self.configured():
             raise HTTPException(status_code=400, detail="Spotify не настроен")
@@ -1021,7 +1036,8 @@ class SpotifyAdapter:
             timeout=(5, 20),
         )
         if response.status_code != 200:
-            raise HTTPException(status_code=400, detail=f"Spotify token exchange failed: {response.text}")
+            logger.warning("Spotify token exchange failed: status=%s body=%s", response.status_code, response.text[:500])
+            raise HTTPException(status_code=400, detail=self.response_error_detail(response, "Spotify token exchange failed"))
         token_data = response.json()
         credentials = {
             "access_token": token_data.get("access_token"),
@@ -1048,7 +1064,8 @@ class SpotifyAdapter:
             timeout=(5, 20),
         )
         if response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Не удалось обновить Spotify token")
+            logger.warning("Spotify token refresh failed: status=%s body=%s", response.status_code, response.text[:500])
+            raise HTTPException(status_code=401, detail=self.response_error_detail(response, "Не удалось обновить Spotify token"))
         token_data = response.json()
         credentials["access_token"] = token_data.get("access_token")
         credentials["expires_at"] = int(time.time()) + int(token_data.get("expires_in") or 3600) - 60
@@ -1069,7 +1086,8 @@ class SpotifyAdapter:
         if response.status_code == 204:
             return {}
         if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=f"Spotify API error: {response.text}")
+            logger.warning("Spotify API request failed: method=%s path=%s status=%s body=%s", method, path, response.status_code, response.text[:500])
+            raise HTTPException(status_code=response.status_code, detail=self.response_error_detail(response, "Spotify API error"))
         return response.json()
 
     def fetch_profile(self, credentials: dict) -> dict:
@@ -1079,7 +1097,8 @@ class SpotifyAdapter:
             timeout=(5, 20),
         )
         if response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Не удалось получить профиль Spotify")
+            logger.warning("Spotify profile request failed: status=%s body=%s", response.status_code, response.text[:500])
+            raise HTTPException(status_code=response.status_code, detail=self.response_error_detail(response, "Не удалось получить профиль Spotify"))
         data = response.json()
         return {
             "authorized": True,
@@ -1407,6 +1426,25 @@ async def connect_service(service: str, data: ServiceConnectRequest, request: Re
         raise HTTPException(status_code=400, detail="Для этого сервиса пока нет универсального входа")
     return await asyncio.to_thread(adapter.connect, session, data.dict())
 
+def spotify_callback_page(title: str, message: str, success: bool = False) -> HTMLResponse:
+    safe_title = html.escape(title)
+    safe_message = html.escape(message)
+    accent = "#22d3ee" if success else "#fb7185"
+    return HTMLResponse(f"""
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>{safe_title}</title></head>
+<body style="font-family: sans-serif; background: #0b1020; color: white; display: grid; place-items: center; min-height: 100vh;">
+  <main style="text-align: center; max-width: 560px; padding: 24px;">
+    <h1 style="margin-bottom: 12px; color: {accent};">{safe_title}</h1>
+    <p style="line-height: 1.5;">{safe_message}</p>
+    <a href="/" style="color: #22d3ee;">Вернуться к переносу</a>
+    {"<script>setTimeout(() => location.href = '/', 900);</script>" if success else ""}
+  </main>
+</body>
+</html>
+""", status_code=200 if success else 400)
+
 @app.get("/api/connections/spotify/callback", name="spotify_callback")
 async def spotify_callback(
     request: Request,
@@ -1418,25 +1456,16 @@ async def spotify_callback(
     session = get_or_create_session(request, response)
     adapter = SERVICE_ADAPTERS["spotify"]
     if error:
-        raise HTTPException(status_code=400, detail=f"Spotify OAuth error: {error}")
+        return spotify_callback_page("Spotify не подключен", f"Spotify OAuth error: {error}")
     if not code or not state or not adapter.verify_state(state, session["id"]):
-        raise HTTPException(status_code=400, detail="Некорректный Spotify OAuth callback")
-    profile = await asyncio.to_thread(adapter.exchange_code, session, code, request)
-    display_name = html.escape(profile.get("display_name") or "Spotify")
-    return HTMLResponse(f"""
-<!doctype html>
-<html lang="ru">
-<head><meta charset="utf-8"><title>Spotify подключен</title></head>
-<body style="font-family: sans-serif; background: #0b1020; color: white; display: grid; place-items: center; min-height: 100vh;">
-  <main style="text-align: center;">
-    <h1>Spotify подключен</h1>
-    <p>Аккаунт: {display_name}</p>
-    <a href="/" style="color: #22d3ee;">Вернуться к переносу</a>
-    <script>setTimeout(() => location.href = '/', 900);</script>
-  </main>
-</body>
-</html>
-""")
+        return spotify_callback_page("Spotify не подключен", "Некорректный Spotify OAuth callback. Попробуйте начать вход заново.")
+    try:
+        profile = await asyncio.to_thread(adapter.exchange_code, session, code, request)
+    except HTTPException as exc:
+        logger.warning("Spotify callback failed: %s", exc.detail)
+        return spotify_callback_page("Spotify не подключен", str(exc.detail))
+    display_name = profile.get("display_name") or "Spotify"
+    return spotify_callback_page("Spotify подключен", f"Аккаунт: {display_name}", success=True)
 
 @app.post("/api/connections/{service}/disconnect")
 async def disconnect_service(service: str, request: Request, response: Response):

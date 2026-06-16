@@ -125,7 +125,7 @@ SPOTIFY_CLIENT_SECRET=...
 SPOTIFY_REDIRECT_URI=https://qobuz.rentalall.ru/api/connections/spotify/callback
 ```
 
-Запрашиваемые scopes: `playlist-modify-public`, `playlist-modify-private`, `playlist-read-private`. Они нужны для списка плейлистов, создания плейлиста и добавления треков.
+Запрашиваемые scopes: `user-read-private`, `user-read-email`, `playlist-modify-public`, `playlist-modify-private`, `playlist-read-private`. Первые два нужны для чтения профиля Spotify после OAuth, остальные - для списка плейлистов, создания плейлиста и добавления треков.
 
 ## Браузерный Вход И Капча
 
