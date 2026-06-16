@@ -64,6 +64,7 @@ QOBUZ_APP_ID=30650571
 QOBUZ_APP_SECRET=
 QSYNC_DB_PATH=qobuzsync.db
 QSYNC_COOKIE_SECURE=false
+QSYNC_LOGIN_PROFILE_DIR=.qobuz_login_profiles
 ```
 
 `QOBUZ_APP_ID` и `QOBUZ_APP_SECRET` используются как серверные значения по умолчанию. Пользователь может заменить их в форме Qobuz в своей сессии.
@@ -72,13 +73,15 @@ QSYNC_COOKIE_SECURE=false
 
 `QSYNC_COOKIE_SECURE=true` нужно ставить на сервере за HTTPS. Для локального `http://127.0.0.1:8000` оставьте `false`.
 
+`QSYNC_LOGIN_PROFILE_DIR` задает директорию для профилей браузерного входа Qobuz. В продакшене лучше хранить ее рядом с базой в `/var/lib/qobuzsync`, а не внутри директории приложения.
+
 ## Вход В Qobuz И Капча
 
 Qobuz может блокировать автоматизированные браузеры invisible captcha/anti-bot проверкой. Если окно входа говорит, что капча не пройдена, но самой капчи не видно, это значит, что сайт отклонил browser score.
 
 Надежный вариант для публичного сервиса - дать пользователю вставить Qobuz token вручную в форме. Браузерный вход запускается на стороне сервера и больше подходит для локального использования или сервера с полноценным GUI/Xvfb.
 
-Профили браузерного входа хранятся отдельно для каждой сессии в `.qobuz_login_profiles/<session_id>/`.
+Профили браузерного входа хранятся отдельно для каждой сессии в `QSYNC_LOGIN_PROFILE_DIR/<session_id>/`.
 
 ## Запуск Для Разработки
 
@@ -108,14 +111,16 @@ nano .env
 ```env
 QSYNC_COOKIE_SECURE=true
 QSYNC_DB_PATH=/var/lib/qobuzsync/qobuzsync.db
+QSYNC_LOGIN_PROFILE_DIR=/var/lib/qobuzsync/qobuz_login_profiles
 ```
 
-Создайте директорию для базы и отдайте ее пользователю сервиса:
+Создайте директорию для базы и браузерных профилей, затем отдайте ее пользователю сервиса:
 
 ```bash
-sudo mkdir -p /var/lib/qobuzsync
-sudo chown -R www-data:www-data /var/lib/qobuzsync
+sudo mkdir -p /var/lib/qobuzsync/qobuz_login_profiles
+sudo chown -R qobuzsync:qobuzsync /var/lib/qobuzsync
 sudo chmod 700 /var/lib/qobuzsync
+sudo chmod 700 /var/lib/qobuzsync/qobuz_login_profiles
 ```
 
 Проверочный запуск:
@@ -135,8 +140,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=www-data
-Group=www-data
+User=qobuzsync
+Group=qobuzsync
 WorkingDirectory=/opt/import-tracks-from-YaMusic-to-Qobuz
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/import-tracks-from-YaMusic-to-Qobuz/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
@@ -203,6 +208,7 @@ server {
 - `qobuzsync.db` и `qobuzsync.db-*` - пользовательские сессии и токены;
 - `.qobuz_login_profile/` - старый локальный профиль браузерного входа Qobuz;
 - `.qobuz_login_profiles/` - профили браузерного входа по сессиям;
+- `/var/lib/qobuzsync/qobuz_login_profiles/` - рекомендуемое место для профилей браузерного входа на сервере;
 - `tracks.txt` - личный список треков;
 - `search_cache.json` - локальный кэш поиска;
 - `.codegraph/` - локальный индекс.

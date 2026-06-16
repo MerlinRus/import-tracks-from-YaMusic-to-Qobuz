@@ -30,10 +30,12 @@ logger = logging.getLogger("qobuz_web")
 
 load_dotenv(override=True)
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_COOKIE_NAME = "qsync_sid"
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 90
 SESSION_COOKIE_SECURE = os.getenv("QSYNC_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
 DB_FILE = os.getenv("QSYNC_DB_PATH", "qobuzsync.db")
+LOGIN_PROFILE_ROOT = os.getenv("QSYNC_LOGIN_PROFILE_DIR") or os.path.join(APP_DIR, ".qobuz_login_profiles")
 SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID", "30650571")
 SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET", "5929d2b8b9354226a0a73d327f918991")
 db_lock = threading.Lock()
@@ -399,17 +401,23 @@ async def browser_login(request: Request, response: Response):
     logger.info("Запуск автоматического перехвата токена через браузер...")
 
     def run_capture_process():
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qobuz_browser_login.py")
-        profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".qobuz_login_profiles", session["id"])
+        script_path = os.path.join(APP_DIR, "qobuz_browser_login.py")
+        profile_dir = os.path.join(LOGIN_PROFILE_ROOT, session["id"])
         try:
+            os.makedirs(profile_dir, mode=0o700, exist_ok=True)
             completed = subprocess.run(
                 [sys.executable, script_path, profile_dir],
-                cwd=os.path.dirname(os.path.abspath(__file__)),
+                cwd=APP_DIR,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 timeout=135,
             )
+        except OSError as exc:
+            return {
+                "status": "error",
+                "error": f"Нет доступа к директории профилей браузера: {LOGIN_PROFILE_ROOT}. Проверьте владельца и права. {exc}",
+            }
         except subprocess.TimeoutExpired:
             return {
                 "status": "error",
