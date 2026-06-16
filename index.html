@@ -96,7 +96,7 @@
                                     <i class="fa-solid fa-user-astronaut"></i>
                                 </div>
                                 <div class="profile-meta">
-                                    <p class="profile-label">Пользователь</p>
+                                    <p class="profile-label">Аккаунт назначения</p>
                                     <h3 class="profile-name" id="profileName">-</h3>
                                     <p class="profile-id">ID: <span id="profileId">-</span></p>
                                 </div>
@@ -1408,6 +1408,10 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                 const data = await readApiResponse(res);
 
                 if (data.status === 'success' || data.status === 'partial_success') {
+                    if (data.account && data.account.display_name) {
+                        addLog(`Загрузка выполнена в аккаунт Qobuz: ${data.account.display_name} (ID: ${data.account.id}).`, 'success');
+                    }
+
                     if (data.is_new) {
                         addLog(`Плейлист создан успешно! ID плейлиста: ${data.playlist_id}`, 'success');
                         document.getElementById('successScreen').querySelector('h2').innerText = 'Плейлист успешно создан!';

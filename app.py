@@ -165,6 +165,21 @@ def get_qobuz_profile(cl: QobuzDirect, preferred_app_ids=None):
             logger.error(f"Ошибка проверки app_id {app_id}: {e}")
     return {"authorized": False}
 
+def ensure_qobuz_authorized(session: dict):
+    qobuz_client = make_qobuz_client(session)
+    profile = get_qobuz_profile(qobuz_client, [
+        session.get("qobuz_working_app_id"),
+        session.get("qobuz_app_id"),
+    ])
+    if not profile.get("authorized"):
+        raise HTTPException(
+            status_code=401,
+            detail="Qobuz аккаунт не выбран. Вставьте token своего Qobuz аккаунта и сохраните настройки.",
+        )
+    if profile.get("app_id") != session.get("qobuz_working_app_id"):
+        update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
+    return qobuz_client, profile
+
 CACHE_FILE = "search_cache.json"
 MATCH_CONCURRENCY = int(os.getenv("MATCH_CONCURRENCY", "5"))
 cache_lock = threading.Lock()
@@ -691,16 +706,8 @@ async def search_single(data: SingleSearchQuery, request: Request, response: Res
 @app.get("/api/qobuz/playlists")
 async def get_qobuz_playlists(request: Request, response: Response):
     session = get_or_create_session(request, response)
-    qobuz_client = make_qobuz_client(session)
     try:
-        profile = get_qobuz_profile(qobuz_client, [
-            session.get("qobuz_working_app_id"),
-            session.get("qobuz_app_id"),
-        ])
-        if not profile.get("authorized"):
-            raise HTTPException(status_code=401, detail="Пользователь Qobuz не авторизован")
-        if profile.get("app_id") != session.get("qobuz_working_app_id"):
-            update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
+        qobuz_client, _profile = ensure_qobuz_authorized(session)
             
         params = {"limit": 100}
         res = qobuz_client._request("playlist/getUserPlaylists", params)
@@ -757,7 +764,11 @@ async def create_playlist(data: PlaylistData, request: Request, response: Respon
         raise HTTPException(status_code=400, detail="Список ID треков пуст")
     
     session = get_or_create_session(request, response)
-    qobuz_client = make_qobuz_client(session)
+    qobuz_client, profile = ensure_qobuz_authorized(session)
+    account = {
+        "display_name": profile.get("display_name"),
+        "id": profile.get("id"),
+    }
     
     playlist_id = data.playlist_id
     if not playlist_id:
@@ -780,6 +791,7 @@ async def create_playlist(data: PlaylistData, request: Request, response: Respon
                 "playlist_id": playlist_id,
                 "count": 0,
                 "is_new": False,
+                "account": account,
                 "detail": "Все треки уже есть в плейлисте (новых треков нет)"
             }
             
@@ -792,11 +804,11 @@ async def create_playlist(data: PlaylistData, request: Request, response: Respon
             success = False
             
     if success:
-        return {"status": "success", "playlist_id": playlist_id, "count": len(data.track_ids), "is_new": is_new}
+        return {"status": "success", "playlist_id": playlist_id, "count": len(data.track_ids), "is_new": is_new, "account": account}
     else:
         status_name = "partial_success"
         detail = "Часть треков не удалось добавить"
-        return {"status": status_name, "playlist_id": playlist_id, "detail": detail, "is_new": is_new}
+        return {"status": status_name, "playlist_id": playlist_id, "detail": detail, "is_new": is_new, "account": account}
 
 @app.websocket("/api/ws/match")
 async def websocket_match(websocket: WebSocket):
