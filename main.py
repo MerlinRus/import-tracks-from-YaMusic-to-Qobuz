@@ -15,8 +15,8 @@ def clean_env(key, default=None):
 
 # Настройки Qobuz API
 # Пытаемся использовать App ID, который чаще всего работает с веб-токенами
-APP_ID = clean_env('QOBUZ_APP_ID', '30650571')
-APP_SECRET = clean_env('QOBUZ_APP_SECRET', '5929d2b8b9354226a0a73d327f918991')
+APP_ID = clean_env('QOBUZ_APP_ID') or '30650571'
+APP_SECRET = clean_env('QOBUZ_APP_SECRET') or '5929d2b8b9354226a0a73d327f918991'
 AUTH_TOKEN = clean_env('QOBUZ_TOKEN')
 BASE_URL = "https://www.qobuz.com/api.json/0.2/"
 REQUEST_TIMEOUT = (5, 30)
@@ -100,11 +100,14 @@ class QobuzDirect:
     def login(self, email, password_hash, current_app_id=None):
         use_app_id = current_app_id or self.app_id
         url = f"{BASE_URL}user/login"
+        timestamp = str(int(time.time()))
         params = {
             "app_id": use_app_id,
             "username": email,
             "password": password_hash,
+            "request_ts": timestamp,
         }
+        params["request_sig"] = self._generate_signature("user/login", params, timestamp)
 
         response = None
         for attempt in range(1, REQUEST_RETRIES + 1):

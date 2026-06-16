@@ -11,7 +11,7 @@ import sys
 import secrets
 import sqlite3
 import hashlib
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Request, Response
@@ -38,8 +38,8 @@ SESSION_COOKIE_SECURE = os.getenv("QSYNC_COOKIE_SECURE", "false").lower() in {"1
 DB_FILE = os.getenv("QSYNC_DB_PATH", "qobuzsync.db")
 LOGIN_PROFILE_ROOT = os.getenv("QSYNC_LOGIN_PROFILE_DIR") or os.path.join(APP_DIR, ".qobuz_login_profiles")
 BROWSER_LOGIN_ENABLED = os.getenv("QSYNC_BROWSER_LOGIN_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID", "30650571")
-SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET", "5929d2b8b9354226a0a73d327f918991")
+SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID") or "30650571"
+SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET") or "5929d2b8b9354226a0a73d327f918991"
 db_lock = threading.Lock()
 QOBUZ_APP_ID_CANDIDATES = [
     SERVER_DEFAULT_APP_ID,
@@ -50,6 +50,7 @@ QOBUZ_APP_ID_CANDIDATES = [
     "306000000",
     "274246104",
 ]
+qobuz_web_app_ids_cache = {"expires_at": 0, "app_ids": []}
 
 def init_db():
     with db_lock:
@@ -147,11 +148,47 @@ def make_qobuz_client(session: dict) -> QobuzDirect:
 
 init_db()
 
-def get_qobuz_profile(cl: QobuzDirect, preferred_app_ids=None):
-    known_app_ids = list(preferred_app_ids or []) + QOBUZ_APP_ID_CANDIDATES
-    # Убираем дубликаты с сохранением порядка
+def unique_values(values):
     seen = set()
-    known_app_ids = [x for x in known_app_ids if x and not (x in seen or seen.add(x))]
+    return [value for value in values if value and not (value in seen or seen.add(value))]
+
+def get_qobuz_web_app_ids():
+    now = time.time()
+    if qobuz_web_app_ids_cache["expires_at"] > now:
+        return qobuz_web_app_ids_cache["app_ids"]
+
+    app_ids = []
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        page = requests.get("https://play.qobuz.com/login", headers=headers, timeout=(5, 15))
+        page.raise_for_status()
+        script_urls = re.findall(r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']', page.text)
+
+        for script_url in script_urls[:10]:
+            script = requests.get(urljoin(page.url, script_url), headers=headers, timeout=(5, 15))
+            if script.status_code != 200:
+                continue
+            app_ids.extend(re.findall(r'["\']app_?id["\']\s*[:=]\s*["\']?(\d{6,})', script.text, flags=re.IGNORECASE))
+            app_ids.extend(re.findall(r'appId\s*[:=]\s*["\']?(\d{6,})', script.text))
+            app_ids.extend(re.findall(r'app_id[=:/%22]+(\d{6,})', script.text, flags=re.IGNORECASE))
+
+        app_ids = unique_values(app_ids)
+        if app_ids:
+            logger.info("Найдены app_id Qobuz web-player: %s", ", ".join(app_ids[:5]))
+    except Exception as exc:
+        logger.warning("Не удалось обновить app_id Qobuz web-player: %s", exc)
+
+    qobuz_web_app_ids_cache["app_ids"] = app_ids
+    qobuz_web_app_ids_cache["expires_at"] = now + 3600
+    return app_ids
+
+def get_qobuz_profile(cl: QobuzDirect, preferred_app_ids=None):
+    known_app_ids = list(preferred_app_ids or []) + get_qobuz_web_app_ids() + QOBUZ_APP_ID_CANDIDATES
+    # Убираем дубликаты с сохранением порядка
+    known_app_ids = unique_values(known_app_ids)
     
     for app_id in known_app_ids:
         try:
@@ -432,9 +469,7 @@ async def qobuz_password_login(data: QobuzLoginData, request: Request, response:
 
     preferred_app_id = (data.app_id or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID).strip()
     app_secret = (data.app_secret or session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET).strip()
-    app_ids = [preferred_app_id] + QOBUZ_APP_ID_CANDIDATES
-    seen = set()
-    app_ids = [app_id for app_id in app_ids if app_id and not (app_id in seen or seen.add(app_id))]
+    app_ids = unique_values([preferred_app_id] + get_qobuz_web_app_ids() + QOBUZ_APP_ID_CANDIDATES)
     password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
     last_error = None
 
