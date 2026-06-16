@@ -1013,67 +1013,64 @@ async def websocket_yandex_auth(websocket: WebSocket):
         await websocket.send_json({"type": "error", "message": "Сессия не найдена. Обновите страницу и попробуйте снова."})
         return
     loop = asyncio.get_running_loop()
-    
-    auth_finished = asyncio.Event()
-    auth_result = {}
+    event_queue = asyncio.Queue()
+    cancel_auth = threading.Event()
 
     def run_auth():
+        def send_event(payload):
+            loop.call_soon_threadsafe(event_queue.put_nowait, payload)
+
         try:
             cl = YandexMusicClient()
             
             def on_code(code_obj):
-                async def send_code():
-                    try:
-                        await websocket.send_json({
-                            "type": "code",
-                            "verification_url": code_obj.verification_url,
-                            "user_code": code_obj.user_code
-                        })
-                    except Exception as e:
-                        logger.error(f"Failed to send code via websocket: {e}")
-                asyncio.run_coroutine_threadsafe(send_code(), loop)
+                logger.info("Получен device-code Яндекс.Музыки: %s", code_obj.user_code)
+                send_event({
+                    "type": "code",
+                    "verification_url": code_obj.verification_url,
+                    "user_code": code_obj.user_code
+                })
                 
-            token = cl.device_auth(on_code=on_code)
-            auth_result["token"] = token.access_token
-            auth_result["status"] = "success"
+            token = cl.device_auth(on_code=on_code, should_cancel=cancel_auth.is_set)
+            send_event({"type": "token", "token": token.access_token})
         except Exception as e:
             logger.error(f"Error in device_auth: {e}")
-            auth_result["status"] = "error"
-            auth_result["error"] = str(e)
-        finally:
-            loop.call_soon_threadsafe(auth_finished.set)
+            send_event({"type": "error", "message": str(e)})
 
-    # Run device_auth in threadpool
     loop.run_in_executor(thread_pool_executor, run_auth)
-    
-    # Wait for authentication to finish
-    await auth_finished.wait()
-    
-    if auth_result.get("status") == "success":
-        token = auth_result["token"]
-        try:
-            update_session_values(session["id"], {"yandex_token": token})
-            
-            # Check user login profile
-            ya_client = YandexMusicClient(token).init()
-            display_name = ya_client.me.account.display_name or ya_client.me.account.login
-            uid = ya_client.me.account.uid
-            
-            await websocket.send_json({
-                "type": "success",
-                "display_name": display_name,
-                "uid": uid
-            })
-        except Exception as e:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Ошибка сохранения токена: {str(e)}"
-            })
-    else:
-        await websocket.send_json({
-            "type": "error",
-            "message": auth_result.get("error", "Неизвестная ошибка авторизации")
-        })
+
+    try:
+        while True:
+            event = await asyncio.wait_for(event_queue.get(), timeout=900)
+            if event.get("type") == "token":
+                token = event["token"]
+                try:
+                    update_session_values(session["id"], {"yandex_token": token})
+
+                    ya_client = YandexMusicClient(token).init()
+                    display_name = ya_client.me.account.display_name or ya_client.me.account.login
+                    uid = ya_client.me.account.uid
+
+                    await websocket.send_json({
+                        "type": "success",
+                        "display_name": display_name,
+                        "uid": uid
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Ошибка сохранения токена: {str(e)}"
+                    })
+                return
+
+            await websocket.send_json(event)
+            if event.get("type") == "error":
+                return
+    except asyncio.TimeoutError:
+        cancel_auth.set()
+        await websocket.send_json({"type": "error", "message": "Истекло время ожидания авторизации Яндекс.Музыки"})
+    except WebSocketDisconnect:
+        cancel_auth.set()
 
 if __name__ == "__main__":
     import uvicorn

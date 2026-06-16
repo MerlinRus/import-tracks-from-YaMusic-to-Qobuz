@@ -798,10 +798,16 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             addLog(`Подключение к Yandex Auth WebSocket: ${wsUrl}...`);
             
             yandexWs = new WebSocket(wsUrl);
+            let yandexCodeReceived = false;
+
+            yandexWs.onopen = () => {
+                document.getElementById('yandexCodeDisplay').innerText = 'Запрашиваем код...';
+            };
             
             yandexWs.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 if (data.type === 'code') {
+                    yandexCodeReceived = true;
                     document.getElementById('yandexCodeDisplay').innerText = data.user_code;
                     document.getElementById('yandexActivateLink').href = data.verification_url;
                     addLog(`Получен код авторизации Яндекс.Музыки: ${data.user_code}`, 'info');
@@ -821,10 +827,14 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             };
             
             yandexWs.onclose = () => {
+                if (!yandexCodeReceived && !document.getElementById('yandexAuthModal').classList.contains('hidden')) {
+                    document.getElementById('yandexCodeDisplay').innerText = 'Не удалось получить код';
+                }
                 addLog('Yandex Auth WebSocket закрыт.');
             };
             
             yandexWs.onerror = (err) => {
+                document.getElementById('yandexCodeDisplay').innerText = 'Ошибка соединения';
                 addLog('Ошибка Yandex Auth WebSocket.', 'error');
             };
         }
