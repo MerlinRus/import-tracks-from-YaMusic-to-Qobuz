@@ -10,6 +10,7 @@ import subprocess
 import sys
 import secrets
 import sqlite3
+import hashlib
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
@@ -40,6 +41,15 @@ BROWSER_LOGIN_ENABLED = os.getenv("QSYNC_BROWSER_LOGIN_ENABLED", "true").lower()
 SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID", "30650571")
 SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET", "5929d2b8b9354226a0a73d327f918991")
 db_lock = threading.Lock()
+QOBUZ_APP_ID_CANDIDATES = [
+    SERVER_DEFAULT_APP_ID,
+    "798273057",     # Android
+    "950096963",     # Web-player
+    "579939560",
+    "100000000",
+    "306000000",
+    "274246104",
+]
 
 def init_db():
     with db_lock:
@@ -138,14 +148,7 @@ def make_qobuz_client(session: dict) -> QobuzDirect:
 init_db()
 
 def get_qobuz_profile(cl: QobuzDirect, preferred_app_ids=None):
-    known_app_ids = list(preferred_app_ids or []) + [
-        '798273057',     # Android
-        '950096963',     # Web-player
-        '579939560',
-        '100000000',
-        '306000000',
-        '274246104'
-    ]
+    known_app_ids = list(preferred_app_ids or []) + QOBUZ_APP_ID_CANDIDATES
     # Убираем дубликаты с сохранением порядка
     seen = set()
     known_app_ids = [x for x in known_app_ids if x and not (x in seen or seen.add(x))]
@@ -312,6 +315,12 @@ class ConfigData(BaseModel):
     app_id: str
     app_secret: str
 
+class QobuzLoginData(BaseModel):
+    email: str
+    password: str
+    app_id: Optional[str] = None
+    app_secret: Optional[str] = None
+
 class PlaylistData(BaseModel):
     name: Optional[str] = None
     playlist_id: Optional[str] = None
@@ -411,6 +420,48 @@ async def qobuz_logout(request: Request, response: Response):
         "qobuz_working_app_id": None,
     })
     return {"status": "success"}
+
+@app.post("/api/auth/qobuz-login")
+async def qobuz_password_login(data: QobuzLoginData, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    email = data.email.strip()
+    password = data.password
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Введите email и пароль Qobuz")
+
+    preferred_app_id = (data.app_id or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID).strip()
+    app_secret = (data.app_secret or session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET).strip()
+    app_ids = [preferred_app_id] + QOBUZ_APP_ID_CANDIDATES
+    seen = set()
+    app_ids = [app_id for app_id in app_ids if app_id and not (app_id in seen or seen.add(app_id))]
+    password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
+    last_error = None
+
+    for app_id in app_ids:
+        qobuz_client = QobuzDirect("", app_id, app_secret)
+        login_result = await asyncio.to_thread(qobuz_client.login, email, password_hash, app_id)
+        if isinstance(login_result, dict) and login_result.get("user_auth_token"):
+            update_session_values(session["id"], {
+                "qobuz_token": login_result["user_auth_token"],
+                "qobuz_app_id": app_id,
+                "qobuz_app_secret": app_secret,
+                "qobuz_working_app_id": app_id,
+            })
+            session = get_session(session["id"])
+            profile_client = make_qobuz_client(session)
+            profile = get_qobuz_profile(profile_client, [app_id])
+            if profile.get("authorized"):
+                update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
+                return {"status": "success", "profile": profile}
+
+            update_session_values(session["id"], {"qobuz_token": "", "qobuz_working_app_id": None})
+            raise HTTPException(status_code=401, detail="Qobuz вернул token, но профиль не удалось проверить")
+
+        if isinstance(login_result, dict):
+            last_error = login_result.get("message") or login_result.get("detail") or login_result.get("status")
+
+    raise HTTPException(status_code=401, detail=last_error or "Не удалось войти в Qobuz. Проверьте email и пароль.")
 
 @app.post("/api/auth/browser-login")
 async def browser_login(request: Request, response: Response):

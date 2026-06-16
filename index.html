@@ -52,38 +52,62 @@
                         <h2><i class="fa-solid fa-circle-user"></i> Qobuz</h2>
                     </div>
                     <div class="card-body">
-                        <form id="configForm">
+                        <form id="qobuzLoginForm">
                             <div class="input-group">
-                                <label for="tokenInput">QOBUZ_TOKEN</label>
+                                <label for="qobuzEmailInput">Email Qobuz</label>
+                                <input type="email" id="qobuzEmailInput" placeholder="email@example.com" required autocomplete="username">
+                            </div>
+
+                            <div class="input-group">
+                                <label for="qobuzPasswordInput">Пароль Qobuz</label>
                                 <div class="input-wrapper">
-                                    <input type="password" id="tokenInput" placeholder="Вставьте Qobuz token..." autocomplete="off">
-                                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('tokenInput')">
-                                        <i class="fa-solid fa-eye" id="tokenInput-eye"></i>
+                                    <input type="password" id="qobuzPasswordInput" placeholder="Пароль..." required autocomplete="current-password">
+                                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('qobuzPasswordInput')">
+                                        <i class="fa-solid fa-eye" id="qobuzPasswordInput-eye"></i>
                                     </button>
                                 </div>
                             </div>
 
-                            <div class="input-group">
-                                <label for="appIdInput">APP_ID</label>
-                                <input type="text" id="appIdInput" placeholder="30650571" required autocomplete="off">
-                            </div>
-
-                            <div class="input-group">
-                                <label for="appSecretInput">APP_SECRET</label>
-                                <div class="input-wrapper">
-                                    <input type="password" id="appSecretInput" placeholder="Секрет..." autocomplete="off">
-                                    <button type="button" class="toggle-password" onclick="togglePasswordVisibility('appSecretInput')">
-                                        <i class="fa-solid fa-eye" id="appSecretInput-eye"></i>
-                                    </button>
-                                </div>
-                            </div>
-
-                            <button type="submit" class="btn btn-primary btn-block" id="saveConfigBtn">
-                                <i class="fa-solid fa-floppy-disk"></i> Сохранить
+                            <button type="submit" class="btn btn-primary btn-block" id="qobuzLoginSubmitBtn">
+                                <i class="fa-solid fa-right-to-bracket"></i> Войти
                             </button>
                         </form>
 
-                            <div class="divider"></div>
+                        <details style="margin-top: 12px;">
+                            <summary style="cursor: pointer; color: var(--text-muted); font-size: 13px; user-select: none;">Расширенный вход</summary>
+                            <form id="configForm" style="margin-top: 12px;">
+                                <div class="input-group">
+                                    <label for="tokenInput">QOBUZ_TOKEN</label>
+                                    <div class="input-wrapper">
+                                        <input type="password" id="tokenInput" placeholder="Вставьте Qobuz token..." autocomplete="off">
+                                        <button type="button" class="toggle-password" onclick="togglePasswordVisibility('tokenInput')">
+                                            <i class="fa-solid fa-eye" id="tokenInput-eye"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="input-group">
+                                    <label for="appIdInput">APP_ID</label>
+                                    <input type="text" id="appIdInput" placeholder="30650571" required autocomplete="off">
+                                </div>
+
+                                <div class="input-group">
+                                    <label for="appSecretInput">APP_SECRET</label>
+                                    <div class="input-wrapper">
+                                        <input type="password" id="appSecretInput" placeholder="Секрет..." autocomplete="off">
+                                        <button type="button" class="toggle-password" onclick="togglePasswordVisibility('appSecretInput')">
+                                            <i class="fa-solid fa-eye" id="appSecretInput-eye"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <button type="submit" class="btn btn-secondary btn-block" id="saveConfigBtn">
+                                    <i class="fa-solid fa-floppy-disk"></i> Сохранить token
+                                </button>
+                            </form>
+                        </details>
+
+                        <div class="divider"></div>
                         
                         <button type="button" class="btn btn-primary btn-block" id="browserLoginBtn" style="box-shadow: 0 0 15px rgba(0, 242, 254, 0.15);">
                             <i class="fa-solid fa-right-to-bracket"></i> Войти в Qobuz
@@ -444,6 +468,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             setupDragAndDrop();
 
             // Элементы
+            document.getElementById('qobuzLoginForm').addEventListener('submit', loginQobuz);
             document.getElementById('configForm').addEventListener('submit', saveConfig);
             document.getElementById('browserLoginBtn').addEventListener('click', triggerBrowserLogin);
             document.getElementById('qobuzLogoutBtn').addEventListener('click', logoutQobuz);
@@ -584,6 +609,41 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
         }
 
         // Сохранить настройки
+        async function loginQobuz(e) {
+            e.preventDefault();
+            const email = document.getElementById('qobuzEmailInput').value.trim();
+            const password = document.getElementById('qobuzPasswordInput').value;
+            const appId = document.getElementById('appIdInput').value.trim();
+            const appSecret = document.getElementById('appSecretInput').value.trim();
+
+            const loginBtn = document.getElementById('qobuzLoginSubmitBtn');
+            loginBtn.disabled = true;
+            loginBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Входим...';
+
+            try {
+                addLog('Вход в Qobuz...');
+                const res = await fetch(`${API_BASE}/auth/qobuz-login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password, app_id: appId, app_secret: appSecret })
+                });
+                const data = await readApiResponse(res);
+
+                hasSavedQobuzToken = true;
+                document.getElementById('qobuzPasswordInput').value = '';
+                document.getElementById('tokenInput').value = '';
+                document.getElementById('tokenInput').placeholder = 'Токен сохранен в этой сессии. Вставьте новый, чтобы заменить.';
+                updateAuthIndicator(data.profile);
+                addLog('Qobuz подключен.', 'success');
+            } catch (err) {
+                addLog(`Ошибка входа в Qobuz: ${err.message}`, 'error');
+                updateAuthIndicator({ authorized: false });
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.innerHTML = '<i class="fa-solid fa-right-to-bracket"></i> Войти';
+            }
+        }
+
         async function saveConfig(e) {
             e.preventDefault();
             const token = document.getElementById('tokenInput').value.trim();

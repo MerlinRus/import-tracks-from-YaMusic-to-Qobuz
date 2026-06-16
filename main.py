@@ -97,6 +97,47 @@ class QobuzDirect:
             print(f"[QOBUZ JSON ERROR] Failed to parse JSON response. Error: {e}. Text: {response.text}")
             return {"status": "error", "message": f"Invalid JSON: {str(e)}"}
 
+    def login(self, email, password_hash, current_app_id=None):
+        use_app_id = current_app_id or self.app_id
+        url = f"{BASE_URL}user/login"
+        params = {
+            "app_id": use_app_id,
+            "username": email,
+            "password": password_hash,
+        }
+
+        response = None
+        for attempt in range(1, REQUEST_RETRIES + 1):
+            try:
+                response = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            except requests.RequestException as e:
+                if attempt == REQUEST_RETRIES:
+                    print(f"[QOBUZ REQUEST ERROR] user/login failed after {attempt} attempts: {e}")
+                    return {"status": "error", "message": str(e)}
+                time.sleep(0.5 * attempt)
+                continue
+
+            if response.status_code in RETRYABLE_STATUS_CODES and attempt < REQUEST_RETRIES:
+                time.sleep(0.5 * attempt)
+                continue
+            break
+
+        if response is None:
+            return {"status": "error", "message": "No response from Qobuz"}
+
+        if response.status_code != 200:
+            print(f"[QOBUZ HTTP ERROR] user/login returned status {response.status_code}. Response: {response.text}")
+
+        try:
+            data = response.json()
+            if isinstance(data, dict) and data.get("user_auth_token"):
+                self.auth_token = data["user_auth_token"]
+                self.app_id = use_app_id
+            return data
+        except Exception as e:
+            print(f"[QOBUZ JSON ERROR] Failed to parse login response. Error: {e}. Text: {response.text}")
+            return {"status": "error", "message": f"Invalid JSON: {str(e)}"}
+
     def get_user_info(self):
         """Проверка токена и автоматический подбор App ID"""
         # Список самых популярных App ID
