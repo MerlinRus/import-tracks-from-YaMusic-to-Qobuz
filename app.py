@@ -186,13 +186,16 @@ def get_qobuz_web_app_ids():
     return app_ids
 
 def get_qobuz_profile(cl: QobuzDirect, preferred_app_ids=None):
+    if not cl.auth_token:
+        return {"authorized": False}
+
     known_app_ids = list(preferred_app_ids or []) + get_qobuz_web_app_ids() + QOBUZ_APP_ID_CANDIDATES
     # Убираем дубликаты с сохранением порядка
     known_app_ids = unique_values(known_app_ids)
     
     for app_id in known_app_ids:
         try:
-            data = cl._request("user/get", current_app_id=app_id)
+            data = cl._request("user/get", current_app_id=app_id, quiet_errors=True)
             if isinstance(data, dict) and 'display_name' in data:
                 cl.app_id = app_id  # Запоминаем рабочий ID
                 return {
@@ -475,7 +478,7 @@ async def qobuz_password_login(data: QobuzLoginData, request: Request, response:
 
     for app_id in app_ids:
         qobuz_client = QobuzDirect("", app_id, app_secret)
-        login_result = await asyncio.to_thread(qobuz_client.login, email, password_hash, app_id)
+        login_result = await asyncio.to_thread(qobuz_client.login, email, password_hash, app_id, True)
         if isinstance(login_result, dict) and login_result.get("user_auth_token"):
             update_session_values(session["id"], {
                 "qobuz_token": login_result["user_auth_token"],

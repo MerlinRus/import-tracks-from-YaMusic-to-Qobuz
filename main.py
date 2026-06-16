@@ -43,7 +43,7 @@ class QobuzDirect:
         sig_base = f"{method_clean}{param_str}{timestamp}{self.app_secret}"
         return hashlib.md5(sig_base.encode()).hexdigest()
 
-    def _request(self, method_path, params=None, current_app_id=None):
+    def _request(self, method_path, params=None, current_app_id=None, quiet_errors=False):
         """Универсальный метод запроса с ручной сборкой URL"""
         if params is None:
             params = {}
@@ -73,7 +73,8 @@ class QobuzDirect:
                 response = self.session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             except requests.RequestException as e:
                 if attempt == REQUEST_RETRIES:
-                    print(f"[QOBUZ REQUEST ERROR] {method_path} failed after {attempt} attempts: {e}")
+                    if not quiet_errors:
+                        print(f"[QOBUZ REQUEST ERROR] {method_path} failed after {attempt} attempts: {e}")
                     return {"status": "error", "message": str(e)}
                 time.sleep(0.5 * attempt)
                 continue
@@ -86,18 +87,19 @@ class QobuzDirect:
         if response is None:
             return {"status": "error", "message": "No response from Qobuz"}
 
-        if response.status_code != 200:
+        if response.status_code != 200 and not quiet_errors:
             print(f"[QOBUZ HTTP ERROR] {method_path} returned status {response.status_code}. Response: {response.text}")
         try:
             data = response.json()
-            if isinstance(data, dict) and data.get('status') == 'error':
+            if isinstance(data, dict) and data.get('status') == 'error' and not quiet_errors:
                 print(f"[QOBUZ API ERROR] {method_path} error response: {data}")
             return data
         except Exception as e:
-            print(f"[QOBUZ JSON ERROR] Failed to parse JSON response. Error: {e}. Text: {response.text}")
+            if not quiet_errors:
+                print(f"[QOBUZ JSON ERROR] Failed to parse JSON response. Error: {e}. Text: {response.text}")
             return {"status": "error", "message": f"Invalid JSON: {str(e)}"}
 
-    def login(self, email, password_hash, current_app_id=None):
+    def login(self, email, password_hash, current_app_id=None, quiet_errors=False):
         use_app_id = current_app_id or self.app_id
         url = f"{BASE_URL}user/login"
         timestamp = str(int(time.time()))
@@ -115,7 +117,8 @@ class QobuzDirect:
                 response = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT)
             except requests.RequestException as e:
                 if attempt == REQUEST_RETRIES:
-                    print(f"[QOBUZ REQUEST ERROR] user/login failed after {attempt} attempts: {e}")
+                    if not quiet_errors:
+                        print(f"[QOBUZ REQUEST ERROR] user/login failed after {attempt} attempts: {e}")
                     return {"status": "error", "message": str(e)}
                 time.sleep(0.5 * attempt)
                 continue
@@ -128,7 +131,7 @@ class QobuzDirect:
         if response is None:
             return {"status": "error", "message": "No response from Qobuz"}
 
-        if response.status_code != 200:
+        if response.status_code != 200 and not quiet_errors:
             print(f"[QOBUZ HTTP ERROR] user/login returned status {response.status_code}. Response: {response.text}")
 
         try:
@@ -138,7 +141,8 @@ class QobuzDirect:
                 self.app_id = use_app_id
             return data
         except Exception as e:
-            print(f"[QOBUZ JSON ERROR] Failed to parse login response. Error: {e}. Text: {response.text}")
+            if not quiet_errors:
+                print(f"[QOBUZ JSON ERROR] Failed to parse login response. Error: {e}. Text: {response.text}")
             return {"status": "error", "message": f"Invalid JSON: {str(e)}"}
 
     def get_user_info(self):
