@@ -11,6 +11,7 @@ venv/
 env/
 
 .codegraph/
+.qobuz_login_profile/
 
 search_cache.json
 search_cache.json.tmp

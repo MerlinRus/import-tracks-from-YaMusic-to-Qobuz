@@ -497,6 +497,25 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             container.scrollTop = container.scrollHeight;
         }
 
+        async function readApiResponse(res) {
+            const text = await res.text();
+            let data = {};
+
+            if (text) {
+                try {
+                    data = JSON.parse(text);
+                } catch {
+                    data = { detail: text.trim() };
+                }
+            }
+
+            if (!res.ok) {
+                throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+            }
+
+            return data;
+        }
+
         // Свернуть/развернуть панель логов
         function toggleLogs() {
             const card = document.getElementById('logsCard');
@@ -600,17 +619,11 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                 const res = await fetch(`${API_BASE}/auth/browser-login`, {
                     method: 'POST'
                 });
-                
-                if (res.status === 200) {
-                    const data = await res.json();
-                    document.getElementById('tokenInput').value = data.token;
-                    document.getElementById('appIdInput').value = data.profile.app_id || '30650571';
-                    updateAuthIndicator(data.profile);
-                    addLog('Автоматическая авторизация выполнена успешно!', 'success');
-                } else {
-                    const data = await res.json();
-                    throw new Error(data.detail || 'Не удалось перехватить токен');
-                }
+                const data = await readApiResponse(res);
+                document.getElementById('tokenInput').value = data.token;
+                document.getElementById('appIdInput').value = data.profile.app_id || '30650571';
+                updateAuthIndicator(data.profile);
+                addLog('Автоматическая авторизация выполнена успешно!', 'success');
             } catch (err) {
                 addLog(`Ошибка авторизации через браузер: ${err.message}`, 'error');
                 alert(`Не удалось выполнить вход: ${err.message}`);

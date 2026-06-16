@@ -6,6 +6,8 @@ import re
 import requests
 import asyncio
 import threading
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
@@ -261,6 +263,31 @@ def get_yandex_profile():
         logger.error(f"Failed to fetch Yandex profile: {e}")
         return {"authorized": False}
 
+def quote_env_value(value):
+    return str(value or "").replace("\\", "\\\\").replace("'", "\\'")
+
+def update_env_values(updates: dict):
+    env_path = ".env"
+    keys = set(updates.keys())
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    new_lines = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip()
+        if key not in keys:
+            new_lines.append(line)
+
+    for key, value in updates.items():
+        new_lines.append(f"{key}='{quote_env_value(value)}'\n")
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+    load_dotenv(override=True)
+
 @app.get("/api/config")
 async def get_config():
     config = load_current_config()
@@ -276,15 +303,12 @@ async def get_config():
 
 @app.post("/api/config")
 async def save_config(data: ConfigData):
-    env_path = ".env"
-    lines = [
-        f"QOBUZ_TOKEN='{data.token}'\n",
-        f"QOBUZ_APP_ID='{data.app_id}'\n",
-        f"QOBUZ_APP_SECRET='{data.app_secret}'\n"
-    ]
     try:
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+        update_env_values({
+            "QOBUZ_TOKEN": data.token,
+            "QOBUZ_APP_ID": data.app_id,
+            "QOBUZ_APP_SECRET": data.app_secret,
+        })
         update_client()
         profile = get_user_profile(client)
         return {"status": "success", "profile": profile}
@@ -300,79 +324,58 @@ async def test_auth():
 @app.post("/api/auth/browser-login")
 async def browser_login():
     logger.info("Запуск автоматического перехвата токена через браузер...")
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        raise HTTPException(
-            status_code=500, 
-            detail="Playwright не установлен. Пожалуйста, запустите 'pip install playwright' и 'playwright install'"
-        )
 
-    token = None
-    captured_app_id = None
-    import urllib.parse
-    
-    def run_playwright():
-        nonlocal token, captured_app_id
-        with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch(headless=False)
-                context = browser.new_context(
-                    viewport={'width': 1024, 'height': 768},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                page = context.new_page()
-                
-                def handle_request(request):
-                    nonlocal token, captured_app_id
-                    headers = request.headers
-                    if 'x-user-auth-token' in headers:
-                        token = headers['x-user-auth-token']
-                    
-                    url = request.url
-                    if "api.json" in url:
-                        parsed_url = urllib.parse.urlparse(url)
-                        query_params = urllib.parse.parse_qs(parsed_url.query)
-                        if "app_id" in query_params:
-                            captured_app_id = query_params["app_id"][0]
-                
-                page.on("request", handle_request)
-                
-                page.goto("https://play.qobuz.com/login", wait_until="domcontentloaded")
-                
-                # Ждем успешного входа или пока пользователь закроет окно (макс 120 секунд)
-                for _ in range(120):
-                    if token or page.is_closed():
-                        break
-                    time.sleep(1)
-            except Exception as e:
-                logger.error(f"Ошибка Playwright при перехвате: {e}")
-            finally:
-                try:
-                    browser.close()
-                except:
-                    pass
+    def run_capture_process():
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qobuz_browser_login.py")
+        try:
+            completed = subprocess.run(
+                [sys.executable, script_path],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=135,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "error",
+                "error": "Окно входа было открыто слишком долго. Попробуйте еще раз и войдите в Qobuz в течение 2 минут.",
+            }
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
 
-    run_playwright()
+        output = (completed.stdout or "").strip()
+        if not output:
+            return {
+                "status": "error",
+                "error": (completed.stderr or "Процесс авторизации завершился без ответа.").strip(),
+            }
 
-    if token:
+        try:
+            return json.loads(output.splitlines()[-1])
+        except json.JSONDecodeError:
+            logger.error("Некорректный ответ процесса авторизации Qobuz: %s", output)
+            return {"status": "error", "error": output}
+
+    auth_result = await asyncio.to_thread(run_capture_process)
+
+    if auth_result.get("status") == "success" and auth_result.get("token"):
+        token = auth_result["token"]
         config = load_current_config()
-        save_app_id = captured_app_id or config["QOBUZ_APP_ID"] or "30650571"
+        save_app_id = auth_result.get("app_id") or config["QOBUZ_APP_ID"] or "30650571"
         
-        env_path = ".env"
-        lines = [
-            f"QOBUZ_TOKEN='{token}'\n",
-            f"QOBUZ_APP_ID='{save_app_id}'\n",
-            f"QOBUZ_APP_SECRET='{config['QOBUZ_APP_SECRET']}'\n"
-        ]
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+        update_env_values({
+            "QOBUZ_TOKEN": token,
+            "QOBUZ_APP_ID": save_app_id,
+            "QOBUZ_APP_SECRET": config["QOBUZ_APP_SECRET"],
+        })
             
         update_client()
         profile = get_user_profile(client)
         return {"status": "success", "token": token, "profile": profile}
-    else:
-        raise HTTPException(status_code=400, detail="Не удалось войти в аккаунт или перехватить токен.")
+
+    detail = auth_result.get("error") or "Не удалось войти в аккаунт или перехватить токен."
+    raise HTTPException(status_code=400, detail=detail)
 
 @app.post("/api/tracks/parse")
 async def parse_tracks(
