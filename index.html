@@ -52,11 +52,11 @@
                         <h2><i class="fa-solid fa-circle-user"></i> Qobuz</h2>
                     </div>
                     <div class="card-body">
-                        <form id="configForm" style="display: none;">
+                        <form id="configForm">
                             <div class="input-group">
                                 <label for="tokenInput">QOBUZ_TOKEN</label>
                                 <div class="input-wrapper">
-                                    <input type="password" id="tokenInput" placeholder="Токен..." required autocomplete="off">
+                                    <input type="password" id="tokenInput" placeholder="Вставьте Qobuz token..." autocomplete="off">
                                     <button type="button" class="toggle-password" onclick="togglePasswordVisibility('tokenInput')">
                                         <i class="fa-solid fa-eye" id="tokenInput-eye"></i>
                                     </button>
@@ -71,7 +71,7 @@
                             <div class="input-group">
                                 <label for="appSecretInput">APP_SECRET</label>
                                 <div class="input-wrapper">
-                                    <input type="password" id="appSecretInput" placeholder="Секрет..." required autocomplete="off">
+                                    <input type="password" id="appSecretInput" placeholder="Секрет..." autocomplete="off">
                                     <button type="button" class="toggle-password" onclick="togglePasswordVisibility('appSecretInput')">
                                         <i class="fa-solid fa-eye" id="appSecretInput-eye"></i>
                                     </button>
@@ -83,7 +83,7 @@
                             </button>
                         </form>
 
-                        <div class="divider" style="display: none;"></div>
+                            <div class="divider"></div>
                         
                         <button type="button" class="btn btn-primary btn-block" id="browserLoginBtn" style="box-shadow: 0 0 15px rgba(0, 242, 254, 0.15);">
                             <i class="fa-solid fa-right-to-bracket"></i> Войти в Qobuz
@@ -101,6 +101,10 @@
                                     <p class="profile-id">ID: <span id="profileId">-</span></p>
                                 </div>
                             </div>
+                            <div class="divider"></div>
+                            <button type="button" class="btn btn-secondary btn-block" id="qobuzLogoutBtn" style="border-color: rgba(255,255,255,0.08); color: var(--text-muted);">
+                                Выйти из Qobuz
+                            </button>
                         </div>
                     </div>
                 </section>
@@ -426,6 +430,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
         let unmatchedTracks = [];
         let currentlyEditingUnmatchedIdx = null; // Индекс трека из unmatchedTracks, для которого ищем альтернативу
         let resultsUiUpdateTimer = null;
+        let hasSavedQobuzToken = false;
         const RESULTS_UI_UPDATE_DELAY_MS = 200;
         const MAX_LOG_LINES = 300;
 
@@ -441,6 +446,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             // Элементы
             document.getElementById('configForm').addEventListener('submit', saveConfig);
             document.getElementById('browserLoginBtn').addEventListener('click', triggerBrowserLogin);
+            document.getElementById('qobuzLogoutBtn').addEventListener('click', logoutQobuz);
             document.getElementById('yandexLoginBtn').addEventListener('click', openYandexAuthModal);
             document.getElementById('yandexLogoutBtn').addEventListener('click', logoutYandex);
             document.getElementById('yandexImportLikedBtn').addEventListener('click', importYandexLiked);
@@ -535,11 +541,16 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             try {
                 addLog('Запрос конфигурации API...');
                 const res = await fetch(`${API_BASE}/config`);
-                const data = await res.json();
+                const data = await readApiResponse(res);
                 
-                document.getElementById('tokenInput').value = data.token || '';
+                hasSavedQobuzToken = Boolean(data.has_qobuz_token);
+                document.getElementById('tokenInput').value = '';
+                document.getElementById('tokenInput').placeholder = hasSavedQobuzToken
+                    ? 'Токен сохранен в этой сессии. Вставьте новый, чтобы заменить.'
+                    : 'Вставьте Qobuz token...';
                 document.getElementById('appIdInput').value = data.app_id || '30650571';
-                document.getElementById('appSecretInput').value = data.app_secret || '5929d2b8b9354226a0a73d327f918991';
+                document.getElementById('appSecretInput').value = '';
+                document.getElementById('appSecretInput').placeholder = 'Оставьте пустым, чтобы использовать серверный секрет';
 
                 updateAuthIndicator(data.profile);
                 updateYandexAuthIndicator(data.yandex_profile);
@@ -583,15 +594,17 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             saveBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Сохраняем...';
 
             try {
-                addLog('Сохранение настроек в .env...');
+                addLog('Сохранение настроек в вашей сессии...');
                 const res = await fetch(`${API_BASE}/config`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ token, app_id: appId, app_secret: appSecret })
                 });
-                const data = await res.json();
+                const data = await readApiResponse(res);
                 
                 if (data.status === 'success') {
+                    hasSavedQobuzToken = token.length > 0 || hasSavedQobuzToken;
+                    document.getElementById('tokenInput').value = '';
                     updateAuthIndicator(data.profile);
                     addLog('Настройки успешно обновлены!', 'success');
                 } else {
@@ -603,6 +616,20 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             } finally {
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Сохранить настройки';
+            }
+        }
+
+        async function logoutQobuz() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/qobuz-logout`, { method: 'POST' });
+                await readApiResponse(res);
+                hasSavedQobuzToken = false;
+                document.getElementById('tokenInput').value = '';
+                document.getElementById('tokenInput').placeholder = 'Вставьте Qobuz token...';
+                updateAuthIndicator({ authorized: false });
+                addLog('Qobuz отключен для этой сессии.', 'success');
+            } catch (err) {
+                addLog(`Ошибка выхода из Qobuz: ${err.message}`, 'error');
             }
         }
 
@@ -620,7 +647,9 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                     method: 'POST'
                 });
                 const data = await readApiResponse(res);
-                document.getElementById('tokenInput').value = data.token;
+                hasSavedQobuzToken = true;
+                document.getElementById('tokenInput').value = '';
+                document.getElementById('tokenInput').placeholder = 'Токен сохранен в этой сессии. Вставьте новый, чтобы заменить.';
                 document.getElementById('appIdInput').value = data.profile.app_id || '30650571';
                 updateAuthIndicator(data.profile);
                 addLog('Автоматическая авторизация выполнена успешно!', 'success');
@@ -752,10 +781,9 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             try {
                 addLog('Выходим из аккаунта Яндекс.Музыки...');
                 const res = await fetch(`${API_BASE}/auth/yandex-logout`, { method: 'POST' });
-                if (res.status === 200) {
-                    updateYandexAuthIndicator({ authorized: false });
-                    addLog('Вы успешно вышли из Яндекс.Музыки.', 'info');
-                }
+                await readApiResponse(res);
+                updateYandexAuthIndicator({ authorized: false });
+                addLog('Вы успешно вышли из Яндекс.Музыки.', 'info');
             } catch (err) {
                 addLog(`Ошибка при выходе из Яндекс.Музыки: ${err.message}`, 'error');
             }
@@ -770,7 +798,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             try {
                 const res = await fetch(`${API_BASE}/tracks/yandex-liked`, { method: 'POST' });
                 if (res.status === 200) {
-                    const data = await res.json();
+                    const data = await readApiResponse(res);
                     parsedTracks = data.tracks || [];
                     
                     if (parsedTracks.length === 0) {
@@ -788,7 +816,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                     renderTracksTable();
                     goToStep(2);
                 } else {
-                    const data = await res.json();
+                    const data = await readApiResponse(res);
                     throw new Error(data.detail || 'Не удалось загрузить любимые треки');
                 }
             } catch (err) {
@@ -821,7 +849,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                 });
                 
                 if (res.status === 200) {
-                    const data = await res.json();
+                    const data = await readApiResponse(res);
                     parsedTracks = data.tracks || [];
                     
                     if (parsedTracks.length === 0) {
@@ -841,7 +869,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                     renderTracksTable();
                     goToStep(2);
                 } else {
-                    const data = await res.json();
+                    const data = await readApiResponse(res);
                     throw new Error(data.detail || 'Не удалось импортировать треки по ссылке');
                 }
             } catch (err) {
@@ -874,7 +902,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                     method: 'POST',
                     body: formData
                 });
-                const data = await res.json();
+                const data = await readApiResponse(res);
                 parsedTracks = data.tracks || [];
                 
                 if (parsedTracks.length === 0) {
@@ -1202,7 +1230,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query })
                 });
-                const data = await res.json();
+                const data = await readApiResponse(res);
                 const results = data.results || [];
                 
                 loader.classList.add('hidden');
@@ -1298,24 +1326,19 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
             
             try {
                 const res = await fetch(`${API_BASE}/qobuz/playlists`);
-                if (res.status === 200) {
-                    const data = await res.json();
-                    select.innerHTML = '';
-                    if (data.playlists && data.playlists.length > 0) {
-                        data.playlists.forEach(pl => {
-                            const opt = document.createElement('option');
-                            opt.value = pl.id;
-                            opt.innerText = `${pl.name} (${pl.tracks_count} треков)`;
-                            select.appendChild(opt);
-                        });
-                        addLog(`Успешно загружено ${data.playlists.length} плейлистов Qobuz.`, 'success');
-                    } else {
-                        select.innerHTML = '<option value="">Нет созданных плейлистов</option>';
-                        addLog('У вас нет плейлистов на Qobuz.', 'warning');
-                    }
+                const data = await readApiResponse(res);
+                select.innerHTML = '';
+                if (data.playlists && data.playlists.length > 0) {
+                    data.playlists.forEach(pl => {
+                        const opt = document.createElement('option');
+                        opt.value = pl.id;
+                        opt.innerText = `${pl.name} (${pl.tracks_count} треков)`;
+                        select.appendChild(opt);
+                    });
+                    addLog(`Успешно загружено ${data.playlists.length} плейлистов Qobuz.`, 'success');
                 } else {
-                    const data = await res.json();
-                    throw new Error(data.detail || 'Не удалось получить плейлисты');
+                    select.innerHTML = '<option value="">Нет созданных плейлистов</option>';
+                    addLog('У вас нет плейлистов на Qobuz.', 'warning');
                 }
             } catch (err) {
                 select.innerHTML = '<option value="">Ошибка загрузки</option>';
@@ -1381,7 +1404,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(bodyData)
                 });
-                const data = await res.json();
+                const data = await readApiResponse(res);
 
                 if (data.status === 'success' || data.status === 'partial_success') {
                     if (data.is_new) {

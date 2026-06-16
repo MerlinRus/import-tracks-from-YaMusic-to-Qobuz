@@ -12,6 +12,9 @@ env/
 
 .codegraph/
 .qobuz_login_profile/
+.qobuz_login_profiles/
+qobuzsync.db
+qobuzsync.db-*
 
 search_cache.json
 search_cache.json.tmp

@@ -36,7 +36,11 @@ def main():
     token = None
     captured_app_id = None
     context = None
-    profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".qobuz_login_profile")
+    profile_dir = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else os.path.join(os.path.dirname(os.path.abspath(__file__)), ".qobuz_login_profile")
+    )
 
     try:
         with sync_playwright() as p:

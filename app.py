@@ -8,9 +8,12 @@ import asyncio
 import threading
 import subprocess
 import sys
+import secrets
+import sqlite3
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Request, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -25,49 +28,114 @@ app = FastAPI(title="Qobuz Playlist Importer")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("qobuz_web")
 
-# Хелпер для загрузки конфигурации
-def load_current_config():
-    load_dotenv(override=True)
-    return {
-        "QOBUZ_TOKEN": os.getenv("QOBUZ_TOKEN", ""),
-        "QOBUZ_APP_ID": os.getenv("QOBUZ_APP_ID", "30650571"),
-        "QOBUZ_APP_SECRET": os.getenv("QOBUZ_APP_SECRET", "5929d2b8b9354226a0a73d327f918991")
-    }
+load_dotenv(override=True)
 
-# Глобальный кэш рабочего App ID
-working_app_id = None
+SESSION_COOKIE_NAME = "qsync_sid"
+SESSION_TTL_SECONDS = 60 * 60 * 24 * 90
+SESSION_COOKIE_SECURE = os.getenv("QSYNC_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
+DB_FILE = os.getenv("QSYNC_DB_PATH", "qobuzsync.db")
+SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID", "30650571")
+SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET", "5929d2b8b9354226a0a73d327f918991")
+db_lock = threading.Lock()
 
-# Глобальный клиент Qobuz
-current_config = load_current_config()
-client = QobuzDirect(
-    current_config["QOBUZ_TOKEN"],
-    current_config["QOBUZ_APP_ID"],
-    current_config["QOBUZ_APP_SECRET"]
-)
+def init_db():
+    with db_lock:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    qobuz_token TEXT,
+                    qobuz_app_id TEXT,
+                    qobuz_app_secret TEXT,
+                    qobuz_working_app_id TEXT,
+                    yandex_token TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+            """)
+            conn.commit()
 
-def update_client():
-    global client, current_config, working_app_id
-    current_config = load_current_config()
-    
-    # Используем ранее сохраненный рабочий App ID, если он есть
-    app_id_to_use = working_app_id or current_config["QOBUZ_APP_ID"]
-    
-    client = QobuzDirect(
-        current_config["QOBUZ_TOKEN"],
-        app_id_to_use,
-        current_config["QOBUZ_APP_SECRET"]
+def db_execute(query, params=(), fetchone=False):
+    with db_lock:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(query, params)
+            row = cur.fetchone() if fetchone else None
+            conn.commit()
+            return dict(row) if row else None
+
+def create_session() -> str:
+    session_id = secrets.token_urlsafe(32)
+    now = int(time.time())
+    db_execute(
+        """
+        INSERT INTO sessions (
+            id, qobuz_token, qobuz_app_id, qobuz_app_secret,
+            qobuz_working_app_id, yandex_token, created_at, updated_at
+        ) VALUES (?, '', ?, ?, NULL, NULL, ?, ?)
+        """,
+        (session_id, SERVER_DEFAULT_APP_ID, SERVER_DEFAULT_APP_SECRET, now, now),
     )
-    # Если рабочий ID еще не сохранен в кэше, выполняем поиск и кэшируем его
-    if not working_app_id:
-        profile = get_user_profile(client)
-        if profile.get("authorized"):
-            working_app_id = client.app_id
+    return session_id
 
-def get_user_profile(cl: QobuzDirect):
-    global working_app_id
-    known_app_ids = [
-        working_app_id,
-        cl.app_id,
+def get_session(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    return db_execute("SELECT * FROM sessions WHERE id = ?", (session_id,), fetchone=True)
+
+def set_session_cookie(response: Response, session_id: str):
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session_id,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+    )
+
+def get_or_create_session(request: Request, response: Response) -> dict:
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    session = get_session(session_id)
+    if not session:
+        session_id = create_session()
+        session = get_session(session_id)
+        set_session_cookie(response, session_id)
+    return session
+
+def get_websocket_session(websocket: WebSocket) -> dict:
+    session_id = websocket.cookies.get(SESSION_COOKIE_NAME)
+    session = get_session(session_id)
+    if not session:
+        raise WebSocketDisconnect(code=4401)
+    return session
+
+def update_session_values(session_id: str, updates: dict):
+    if not updates:
+        return
+    allowed = {
+        "qobuz_token",
+        "qobuz_app_id",
+        "qobuz_app_secret",
+        "qobuz_working_app_id",
+        "yandex_token",
+    }
+    fields = [key for key in updates.keys() if key in allowed]
+    if not fields:
+        return
+    assignments = ", ".join(f"{field} = ?" for field in fields)
+    values = [updates[field] for field in fields]
+    values.extend([int(time.time()), session_id])
+    db_execute(f"UPDATE sessions SET {assignments}, updated_at = ? WHERE id = ?", values)
+
+def make_qobuz_client(session: dict) -> QobuzDirect:
+    app_id = session.get("qobuz_working_app_id") or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID
+    app_secret = session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET
+    return QobuzDirect(session.get("qobuz_token") or "", app_id, app_secret)
+
+init_db()
+
+def get_qobuz_profile(cl: QobuzDirect, preferred_app_ids=None):
+    known_app_ids = list(preferred_app_ids or []) + [
         '798273057',     # Android
         '950096963',     # Web-player
         '579939560',
@@ -84,7 +152,6 @@ def get_user_profile(cl: QobuzDirect):
             data = cl._request("user/get", current_app_id=app_id)
             if isinstance(data, dict) and 'display_name' in data:
                 cl.app_id = app_id  # Запоминаем рабочий ID
-                working_app_id = app_id
                 return {
                     "authorized": True,
                     "display_name": data["display_name"],
@@ -127,12 +194,12 @@ def save_search_cache():
 # Загружаем кэш
 load_search_cache()
 
-def get_thread_qobuz_client() -> QobuzDirect:
-    app_id_to_use = working_app_id or current_config["QOBUZ_APP_ID"]
+def get_thread_qobuz_client(session: dict) -> QobuzDirect:
+    app_id_to_use = session.get("qobuz_working_app_id") or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID
     config_key = (
-        current_config["QOBUZ_TOKEN"],
+        session.get("qobuz_token") or "",
         app_id_to_use,
-        current_config["QOBUZ_APP_SECRET"],
+        session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET,
     )
     cached_key = getattr(thread_local, "qobuz_config_key", None)
     cached_client = getattr(thread_local, "qobuz_client", None)
@@ -144,8 +211,8 @@ def get_thread_qobuz_client() -> QobuzDirect:
 
     return cached_client
 
-def search_track_rich_thread(query: str) -> Optional[dict]:
-    return search_track_rich(get_thread_qobuz_client(), query)
+def search_track_rich_thread(query: str, session: dict) -> Optional[dict]:
+    return search_track_rich(get_thread_qobuz_client(session), query)
 
 def search_track_rich(cl: QobuzDirect, query: str) -> Optional[dict]:
     query_key = query.lower().strip()
@@ -241,15 +308,19 @@ class UrlParseRequest(BaseModel):
 # Эндпоинты
 
 @app.get("/")
-async def get_index():
-    return FileResponse("index.html")
+async def get_index(request: Request):
+    file_response = FileResponse("index.html")
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    if not get_session(session_id):
+        session_id = create_session()
+        set_session_cookie(file_response, session_id)
+    return file_response
 
 @app.get("/style.css")
 async def get_css():
     return FileResponse("style.css", media_type="text/css")
 
-def get_yandex_profile():
-    token = os.getenv("YANDEX_MUSIC_TOKEN", "")
+def get_yandex_profile(token: str = ""):
     if not token:
         return {"authorized": False}
     try:
@@ -263,73 +334,76 @@ def get_yandex_profile():
         logger.error(f"Failed to fetch Yandex profile: {e}")
         return {"authorized": False}
 
-def quote_env_value(value):
-    return str(value or "").replace("\\", "\\\\").replace("'", "\\'")
-
-def update_env_values(updates: dict):
-    env_path = ".env"
-    keys = set(updates.keys())
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-    new_lines = []
-    for line in lines:
-        key = line.split("=", 1)[0].strip()
-        if key not in keys:
-            new_lines.append(line)
-
-    for key, value in updates.items():
-        new_lines.append(f"{key}='{quote_env_value(value)}'\n")
-
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
-
-    load_dotenv(override=True)
-
 @app.get("/api/config")
-async def get_config():
-    config = load_current_config()
-    profile = get_user_profile(client)
-    yandex_profile = get_yandex_profile()
+async def get_config(request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    qobuz_client = make_qobuz_client(session)
+    profile = get_qobuz_profile(qobuz_client, [
+        session.get("qobuz_working_app_id"),
+        session.get("qobuz_app_id"),
+    ])
+    if profile.get("authorized") and profile.get("app_id") != session.get("qobuz_working_app_id"):
+        update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
+    yandex_profile = get_yandex_profile(session.get("yandex_token") or "")
     return {
-        "token": config["QOBUZ_TOKEN"],
-        "app_id": config["QOBUZ_APP_ID"],
-        "app_secret": config["QOBUZ_APP_SECRET"],
+        "has_qobuz_token": bool(session.get("qobuz_token")),
+        "app_id": session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID,
         "profile": profile,
         "yandex_profile": yandex_profile
     }
 
 @app.post("/api/config")
-async def save_config(data: ConfigData):
+async def save_config(data: ConfigData, request: Request, response: Response):
+    session = get_or_create_session(request, response)
     try:
-        update_env_values({
-            "QOBUZ_TOKEN": data.token,
-            "QOBUZ_APP_ID": data.app_id,
-            "QOBUZ_APP_SECRET": data.app_secret,
+        app_id = data.app_id.strip() or SERVER_DEFAULT_APP_ID
+        token = data.token.strip() or session.get("qobuz_token") or ""
+        app_secret = data.app_secret.strip() or session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET
+        update_session_values(session["id"], {
+            "qobuz_token": token,
+            "qobuz_app_id": app_id,
+            "qobuz_app_secret": app_secret,
+            "qobuz_working_app_id": None,
         })
-        update_client()
-        profile = get_user_profile(client)
+        session = get_session(session["id"])
+        qobuz_client = make_qobuz_client(session)
+        profile = get_qobuz_profile(qobuz_client, [app_id])
+        if profile.get("authorized"):
+            update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
         return {"status": "success", "profile": profile}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/test")
-async def test_auth():
-    update_client()
-    profile = get_user_profile(client)
+async def test_auth(request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    qobuz_client = make_qobuz_client(session)
+    profile = get_qobuz_profile(qobuz_client, [
+        session.get("qobuz_working_app_id"),
+        session.get("qobuz_app_id"),
+    ])
     return profile
 
+@app.post("/api/auth/qobuz-logout")
+async def qobuz_logout(request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    update_session_values(session["id"], {
+        "qobuz_token": "",
+        "qobuz_working_app_id": None,
+    })
+    return {"status": "success"}
+
 @app.post("/api/auth/browser-login")
-async def browser_login():
+async def browser_login(request: Request, response: Response):
+    session = get_or_create_session(request, response)
     logger.info("Запуск автоматического перехвата токена через браузер...")
 
     def run_capture_process():
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qobuz_browser_login.py")
+        profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".qobuz_login_profiles", session["id"])
         try:
             completed = subprocess.run(
-                [sys.executable, script_path],
+                [sys.executable, script_path, profile_dir],
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 capture_output=True,
                 text=True,
@@ -361,18 +435,20 @@ async def browser_login():
 
     if auth_result.get("status") == "success" and auth_result.get("token"):
         token = auth_result["token"]
-        config = load_current_config()
-        save_app_id = auth_result.get("app_id") or config["QOBUZ_APP_ID"] or "30650571"
+        save_app_id = auth_result.get("app_id") or session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID
         
-        update_env_values({
-            "QOBUZ_TOKEN": token,
-            "QOBUZ_APP_ID": save_app_id,
-            "QOBUZ_APP_SECRET": config["QOBUZ_APP_SECRET"],
+        update_session_values(session["id"], {
+            "qobuz_token": token,
+            "qobuz_app_id": save_app_id,
+            "qobuz_app_secret": session.get("qobuz_app_secret") or SERVER_DEFAULT_APP_SECRET,
+            "qobuz_working_app_id": None,
         })
-            
-        update_client()
-        profile = get_user_profile(client)
-        return {"status": "success", "token": token, "profile": profile}
+        session = get_session(session["id"])
+        qobuz_client = make_qobuz_client(session)
+        profile = get_qobuz_profile(qobuz_client, [save_app_id])
+        if profile.get("authorized"):
+            update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
+        return {"status": "success", "profile": profile}
 
     detail = auth_result.get("error") or "Не удалось войти в аккаунт или перехватить токен."
     raise HTTPException(status_code=400, detail=detail)
@@ -395,12 +471,18 @@ async def parse_tracks(
         
     return {"tracks": track_names}
 
-def parse_yandex_music_url(url: str):
+def parse_yandex_music_url(url: str, session: dict):
     # Clean up the URL (remove query parameters)
     clean_url = url.split("?")[0].strip().rstrip("/")
+    if clean_url.startswith(("music.yandex.ru/", "www.music.yandex.ru/")):
+        clean_url = f"https://{clean_url}"
+    parsed = urlparse(clean_url)
+    host = parsed.hostname or ""
+    if parsed.scheme not in {"http", "https"} or host not in {"music.yandex.ru", "www.music.yandex.ru"}:
+        raise ValueError("Поддерживаются только ссылки music.yandex.ru")
     
     # Initialize client (guest or token)
-    yandex_token = os.getenv("YANDEX_MUSIC_TOKEN", "")
+    yandex_token = session.get("yandex_token") or ""
     try:
         if yandex_token:
             yandex_client = YandexMusicClient(yandex_token).init()
@@ -573,9 +655,10 @@ def parse_yandex_music_url(url: str):
     raise ValueError("Неподдерживаемый формат ссылки Яндекс.Музыки. Пожалуйста, укажите ссылку на плейлист, альбом, трек или исполнителя.")
 
 @app.post("/api/tracks/parse-url")
-def parse_tracks_url(data: UrlParseRequest):
+def parse_tracks_url(data: UrlParseRequest, request: Request, response: Response):
+    session = get_or_create_session(request, response)
     try:
-        tracks, playlist_name = parse_yandex_music_url(data.url)
+        tracks, playlist_name = parse_yandex_music_url(data.url, session)
         return {"tracks": tracks, "playlist_name": playlist_name}
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -584,20 +667,27 @@ def parse_tracks_url(data: UrlParseRequest):
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
 
 @app.post("/api/search/single")
-async def search_single(data: SingleSearchQuery):
-    results = search_tracks_rich_multi(client, data.query)
+async def search_single(data: SingleSearchQuery, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    results = search_tracks_rich_multi(make_qobuz_client(session), data.query)
     return {"results": results}
 
 @app.get("/api/qobuz/playlists")
-async def get_qobuz_playlists():
-    update_client()
+async def get_qobuz_playlists(request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    qobuz_client = make_qobuz_client(session)
     try:
-        profile = get_user_profile(client)
+        profile = get_qobuz_profile(qobuz_client, [
+            session.get("qobuz_working_app_id"),
+            session.get("qobuz_app_id"),
+        ])
         if not profile.get("authorized"):
             raise HTTPException(status_code=401, detail="Пользователь Qobuz не авторизован")
+        if profile.get("app_id") != session.get("qobuz_working_app_id"):
+            update_session_values(session["id"], {"qobuz_working_app_id": profile["app_id"]})
             
         params = {"limit": 100}
-        res = client._request("playlist/getUserPlaylists", params)
+        res = qobuz_client._request("playlist/getUserPlaylists", params)
         if "playlists" in res and "items" in res["playlists"]:
             items = []
             for item in res["playlists"]["items"]:
@@ -608,6 +698,8 @@ async def get_qobuz_playlists():
                 })
             return {"playlists": items}
         return {"playlists": []}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching user playlists: {e}")
         raise HTTPException(status_code=500, detail=f"Не удалось получить список плейлистов: {str(e)}")
@@ -644,24 +736,25 @@ def get_playlist_track_ids(cl: QobuzDirect, playlist_id: str) -> List[int]:
     return all_track_ids
 
 @app.post("/api/playlist/create")
-async def create_playlist(data: PlaylistData):
+async def create_playlist(data: PlaylistData, request: Request, response: Response):
     if not data.track_ids:
         raise HTTPException(status_code=400, detail="Список ID треков пуст")
     
-    update_client()
+    session = get_or_create_session(request, response)
+    qobuz_client = make_qobuz_client(session)
     
     playlist_id = data.playlist_id
     if not playlist_id:
         if not data.name:
             raise HTTPException(status_code=400, detail="Название плейлиста не указано")
-        playlist_id = client.create_playlist(data.name)
+        playlist_id = qobuz_client.create_playlist(data.name)
         if not playlist_id:
             raise HTTPException(status_code=500, detail="Не удалось создать плейлист в Qobuz")
         is_new = True
     else:
         is_new = False
         # Fetch existing tracks in Qobuz playlist to skip duplicates (Synchronization)
-        existing_ids = get_playlist_track_ids(client, playlist_id)
+        existing_ids = get_playlist_track_ids(qobuz_client, playlist_id)
         existing_set = set(existing_ids)
         new_track_ids = [tid for tid in data.track_ids if tid not in existing_set]
         
@@ -679,7 +772,7 @@ async def create_playlist(data: PlaylistData):
     success = True
     for i in range(0, len(data.track_ids), 100):
         chunk = data.track_ids[i:i+100]
-        if not client.add_tracks_to_playlist(playlist_id, chunk):
+        if not qobuz_client.add_tracks_to_playlist(playlist_id, chunk):
             success = False
             
     if success:
@@ -693,6 +786,7 @@ async def create_playlist(data: PlaylistData):
 async def websocket_match(websocket: WebSocket):
     await websocket.accept()
     try:
+        session = get_websocket_session(websocket)
         data = await websocket.receive_text()
         req = json.loads(data)
         queries = req.get("tracks", [])
@@ -708,7 +802,7 @@ async def websocket_match(websocket: WebSocket):
         async def worker(idx, query):
             async with sem:
                 # Выполняем блокирующий поиск в отдельном потоке
-                track_info = await asyncio.to_thread(search_track_rich_thread, query)
+                track_info = await asyncio.to_thread(search_track_rich_thread, query, session)
                 return idx, query, track_info
                 
         # Создаем все задачи параллельно
@@ -759,21 +853,15 @@ async def websocket_match(websocket: WebSocket):
             pass
 
 @app.post("/api/auth/yandex-logout")
-def yandex_logout():
-    env_path = ".env"
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    new_lines = [l for l in lines if not l.startswith("YANDEX_MUSIC_TOKEN=")]
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
-    load_dotenv(override=True)
+def yandex_logout(request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    update_session_values(session["id"], {"yandex_token": None})
     return {"status": "success"}
 
 @app.post("/api/tracks/yandex-liked")
-def parse_yandex_liked():
-    yandex_token = os.getenv("YANDEX_MUSIC_TOKEN", "")
+def parse_yandex_liked(request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    yandex_token = session.get("yandex_token") or ""
     if not yandex_token:
         raise HTTPException(status_code=400, detail="Для импорта 'Мне нравится' необходимо авторизоваться в Яндекс.Музыке.")
     try:
@@ -802,6 +890,11 @@ thread_pool_executor = ThreadPoolExecutor(max_workers=4)
 @app.websocket("/api/ws/yandex-auth")
 async def websocket_yandex_auth(websocket: WebSocket):
     await websocket.accept()
+    try:
+        session = get_websocket_session(websocket)
+    except WebSocketDisconnect:
+        await websocket.send_json({"type": "error", "message": "Сессия не найдена. Обновите страницу и попробуйте снова."})
+        return
     loop = asyncio.get_running_loop()
     
     auth_finished = asyncio.Event()
@@ -841,21 +934,8 @@ async def websocket_yandex_auth(websocket: WebSocket):
     
     if auth_result.get("status") == "success":
         token = auth_result["token"]
-        # Save token to .env
-        env_path = ".env"
         try:
-            lines = []
-            if os.path.exists(env_path):
-                with open(env_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-            
-            new_lines = [l for l in lines if not l.startswith("YANDEX_MUSIC_TOKEN=")]
-            new_lines.append(f"YANDEX_MUSIC_TOKEN='{token}'\n")
-            
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-                
-            load_dotenv(override=True)
+            update_session_values(session["id"], {"yandex_token": token})
             
             # Check user login profile
             ya_client = YandexMusicClient(token).init()
@@ -864,7 +944,6 @@ async def websocket_yandex_auth(websocket: WebSocket):
             
             await websocket.send_json({
                 "type": "success",
-                "token": token,
                 "display_name": display_name,
                 "uid": uid
             })
