@@ -19,6 +19,27 @@ def browser_channels():
     yield None
 
 
+def build_browser_env(profile_dir):
+    browser_env = os.environ.copy()
+    if sys.platform.startswith("win"):
+        return browser_env
+
+    runtime_root = os.getenv("QSYNC_BROWSER_RUNTIME_DIR")
+    if not runtime_root:
+        profiles_root = os.path.dirname(os.path.abspath(profile_dir))
+        runtime_root = os.path.dirname(profiles_root)
+
+    browser_env["HOME"] = runtime_root
+    browser_env.setdefault("XDG_CACHE_HOME", os.path.join(runtime_root, ".cache"))
+    browser_env.setdefault("XDG_CONFIG_HOME", os.path.join(runtime_root, ".config"))
+    browser_env.setdefault("XDG_DATA_HOME", os.path.join(runtime_root, ".local", "share"))
+
+    for key in ("HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+        os.makedirs(browser_env[key], mode=0o700, exist_ok=True)
+
+    return browser_env
+
+
 def main():
     if sys.platform.startswith("win") and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -41,6 +62,7 @@ def main():
         if len(sys.argv) > 1
         else os.path.join(os.path.dirname(os.path.abspath(__file__)), ".qobuz_login_profile")
     )
+    browser_env = build_browser_env(profile_dir)
 
     try:
         with sync_playwright() as p:
@@ -53,8 +75,12 @@ def main():
                         "locale": "ru-RU",
                         "timezone_id": "Europe/Moscow",
                         "user_agent": USER_AGENT,
+                        "env": browser_env,
                         "args": [
                             "--disable-blink-features=AutomationControlled",
+                            "--disable-breakpad",
+                            "--disable-crashpad",
+                            "--disable-crash-reporter",
                             "--disable-infobars",
                             "--no-first-run",
                         ],
