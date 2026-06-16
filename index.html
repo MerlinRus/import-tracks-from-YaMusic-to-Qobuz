@@ -551,6 +551,7 @@ MORGENSHTERN - Цветок" rows="8"></textarea>
                 document.getElementById('appIdInput').value = data.app_id || '30650571';
                 document.getElementById('appSecretInput').value = '';
                 document.getElementById('appSecretInput').placeholder = 'Оставьте пустым, чтобы использовать серверный секрет';
+                document.getElementById('browserLoginBtn').classList.toggle('hidden', data.browser_login_enabled === false);
 
                 updateAuthIndicator(data.profile);
                 updateYandexAuthIndicator(data.yandex_profile);

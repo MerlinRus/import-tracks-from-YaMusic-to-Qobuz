@@ -66,6 +66,7 @@ QSYNC_DB_PATH=qobuzsync.db
 QSYNC_COOKIE_SECURE=false
 QSYNC_LOGIN_PROFILE_DIR=.qobuz_login_profiles
 QSYNC_BROWSER_RUNTIME_DIR=
+QSYNC_BROWSER_LOGIN_ENABLED=true
 ```
 
 `QOBUZ_APP_ID` и `QOBUZ_APP_SECRET` используются как серверные значения по умолчанию. Пользователь может заменить их в форме Qobuz в своей сессии.
@@ -77,6 +78,8 @@ QSYNC_BROWSER_RUNTIME_DIR=
 `QSYNC_LOGIN_PROFILE_DIR` задает директорию для профилей браузерного входа Qobuz. В продакшене лучше хранить ее рядом с базой в `/var/lib/qobuzsync`, а не внутри директории приложения.
 
 `QSYNC_BROWSER_RUNTIME_DIR` задает домашнюю runtime-директорию для серверного Chromium. На сервере укажите `/var/lib/qobuzsync`, чтобы cache/config/crashpad не пытались писать в недоступный home.
+
+`QSYNC_BROWSER_LOGIN_ENABLED=false` отключает серверный браузерный вход Qobuz. Для публичного сервиса это рекомендуемый режим: пользователь вставляет Qobuz token вручную, а сервер не пытается запускать Chromium.
 
 ## Вход В Qobuz И Капча
 
@@ -116,6 +119,7 @@ QSYNC_COOKIE_SECURE=true
 QSYNC_DB_PATH=/var/lib/qobuzsync/qobuzsync.db
 QSYNC_LOGIN_PROFILE_DIR=/var/lib/qobuzsync/qobuz_login_profiles
 QSYNC_BROWSER_RUNTIME_DIR=/var/lib/qobuzsync
+QSYNC_BROWSER_LOGIN_ENABLED=false
 ```
 
 Создайте директорию для базы и браузерных профилей, затем отдайте ее пользователю сервиса:

@@ -36,6 +36,7 @@ SESSION_TTL_SECONDS = 60 * 60 * 24 * 90
 SESSION_COOKIE_SECURE = os.getenv("QSYNC_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
 DB_FILE = os.getenv("QSYNC_DB_PATH", "qobuzsync.db")
 LOGIN_PROFILE_ROOT = os.getenv("QSYNC_LOGIN_PROFILE_DIR") or os.path.join(APP_DIR, ".qobuz_login_profiles")
+BROWSER_LOGIN_ENABLED = os.getenv("QSYNC_BROWSER_LOGIN_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 SERVER_DEFAULT_APP_ID = os.getenv("QOBUZ_APP_ID", "30650571")
 SERVER_DEFAULT_APP_SECRET = os.getenv("QOBUZ_APP_SECRET", "5929d2b8b9354226a0a73d327f918991")
 db_lock = threading.Lock()
@@ -350,6 +351,7 @@ async def get_config(request: Request, response: Response):
     return {
         "has_qobuz_token": bool(session.get("qobuz_token")),
         "app_id": session.get("qobuz_app_id") or SERVER_DEFAULT_APP_ID,
+        "browser_login_enabled": BROWSER_LOGIN_ENABLED,
         "profile": profile,
         "yandex_profile": yandex_profile
     }
@@ -397,6 +399,12 @@ async def qobuz_logout(request: Request, response: Response):
 
 @app.post("/api/auth/browser-login")
 async def browser_login(request: Request, response: Response):
+    if not BROWSER_LOGIN_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail="Браузерный вход Qobuz отключен на этом сервере. Вставьте Qobuz token вручную.",
+        )
+
     session = get_or_create_session(request, response)
     logger.info("Запуск автоматического перехвата токена через браузер...")
 
