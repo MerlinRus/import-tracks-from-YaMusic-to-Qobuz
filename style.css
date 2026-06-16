@@ -339,9 +339,37 @@ body {
 }
 
 /* Боковая панель (Настройки) */
-.sidebar-card {
+.sidebar-wrapper {
     position: sticky;
     top: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.sidebar-card {
+    position: relative;
+}
+
+@media (max-width: 900px) {
+    .sidebar-wrapper {
+        position: static;
+    }
+}
+
+/* Legacy guard for old cached markup */
+.sidebar-wrapper[style] {
+    position: sticky;
+    top: 24px;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 24px !important;
+}
+
+@media (max-width: 900px) {
+    .sidebar-wrapper[style] {
+        position: static;
+    }
 }
 
 .input-group {
