@@ -164,13 +164,21 @@
                             <span class="badge" id="readyBadge">0 готово</span>
                         </div>
                         <div class="playlist-mode-selector route-mode">
-                            <label>
+                            <label class="playlist-mode-option">
                                 <input type="radio" name="playlistMode" value="new" checked>
-                                Создать новый
+                                <span class="playlist-mode-icon"><i class="fa-solid fa-plus"></i></span>
+                                <span class="playlist-mode-copy">
+                                    <strong>Создать новый</strong>
+                                    <small>Отдельный плейлист</small>
+                                </span>
                             </label>
-                            <label>
+                            <label class="playlist-mode-option">
                                 <input type="radio" name="playlistMode" value="existing">
-                                Добавить в существующий
+                                <span class="playlist-mode-icon"><i class="fa-solid fa-list-ul"></i></span>
+                                <span class="playlist-mode-copy">
+                                    <strong>Добавить</strong>
+                                    <small>В существующий</small>
+                                </span>
                             </label>
                         </div>
                         <div class="input-group" id="newPlaylistGroup">
