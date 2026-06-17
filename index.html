@@ -282,6 +282,8 @@
         let unmatchedTracks = [];
         let editingUnmatchedIndex = null;
         let yandexWs = null;
+        let matchWs = null;
+        let isMatching = false;
 
         document.addEventListener('DOMContentLoaded', () => {
             bindStaticEvents();
@@ -350,6 +352,11 @@
                 throw new Error(data.detail || data.message || `HTTP ${res.status}`);
             }
             return data;
+        }
+
+        function websocketUrl(path) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            return `${protocol}//${window.location.host}${API_BASE}${path}`;
         }
 
         function renderAll() {
@@ -665,7 +672,30 @@
             renderTracksTable();
         }
 
+        function setMatchingState(active) {
+            isMatching = active;
+            const btn = document.getElementById('matchBtn');
+            btn.disabled = active;
+            btn.innerHTML = active
+                ? 'Ищем треки... <i class="fa-solid fa-circle-notch fa-spin"></i>'
+                : 'Найти в сервисе назначения <i class="fa-solid fa-magnifying-glass"></i>';
+        }
+
+        function resetMatchSocket() {
+            if (matchWs) {
+                matchWs.onopen = null;
+                matchWs.onmessage = null;
+                matchWs.onerror = null;
+                matchWs.onclose = null;
+                if (matchWs.readyState === WebSocket.OPEN || matchWs.readyState === WebSocket.CONNECTING) {
+                    matchWs.close();
+                }
+                matchWs = null;
+            }
+        }
+
         async function startMatching() {
+            if (isMatching) return;
             if (parsedTracks.filter(Boolean).length === 0) {
                 alert('Сначала загрузите список треков.');
                 return;
@@ -678,37 +708,104 @@
             unmatchedTracks = [];
             updateProgress(10);
             renderResults();
-            try {
-                addLog(`Ищем треки в ${serviceById(selectedDestination)?.name || selectedDestination}...`, 'system');
-                const data = await api('/match', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ destination: selectedDestination, tracks: parsedTracks })
-                });
-                (data.matches || []).forEach(item => {
-                    if (item.match) {
+            setMatchingState(true);
+            resetMatchSocket();
+
+            const destination = selectedDestination;
+            const destinationName = serviceById(destination)?.name || destination;
+            const tracks = parsedTracks.slice();
+            const total = tracks.filter(track => String(track || '').trim()).length;
+            let processed = 0;
+            let finished = false;
+            let lastRenderAt = 0;
+
+            const flushResults = (force = false) => {
+                const now = Date.now();
+                if (force || now - lastRenderAt > 400) {
+                    renderResults();
+                    lastRenderAt = now;
+                }
+            };
+
+            addLog(`Ищем треки в ${destinationName}...`, 'system');
+            matchWs = new WebSocket(websocketUrl('/ws/match'));
+
+            matchWs.onopen = () => {
+                matchWs.send(JSON.stringify({ destination, tracks }));
+            };
+
+            matchWs.onmessage = event => {
+                let data = {};
+                try {
+                    data = JSON.parse(event.data);
+                } catch {
+                    data = { type: 'error', message: event.data };
+                }
+
+                if (data.type === 'progress') {
+                    processed = Number(data.processed || processed + 1);
+                    if (data.match) {
                         matchedTracks.push({
-                            originalIndex: item.index,
-                            original: item.original,
-                            ...item.match
+                            originalIndex: data.index,
+                            original: data.query,
+                            ...data.match
                         });
                     } else {
                         unmatchedTracks.push({
-                            originalIndex: item.index,
-                            original: item.original,
-                            searchQuery: item.original
+                            originalIndex: data.index,
+                            original: data.query,
+                            searchQuery: data.query
                         });
                     }
-                });
-                updateProgress(100);
-                renderResults();
-                addLog(`Сопоставление завершено: ${data.matched} из ${data.total}.`, 'success');
-                if (matchedTracks.length > 0) loadDestinationPlaylists();
-            } catch (err) {
+                    updateProgress(Math.max(3, Math.round((processed / Math.max(total, 1)) * 100)));
+                    flushResults(false);
+                    return;
+                }
+
+                if (data.type === 'done') {
+                    finished = true;
+                    updateProgress(100);
+                    matchedTracks.sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0));
+                    unmatchedTracks.sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0));
+                    flushResults(true);
+                    addLog(`Сопоставление завершено: ${data.matched ?? matchedTracks.length} из ${data.total ?? total}.`, 'success');
+                    setMatchingState(false);
+                    resetMatchSocket();
+                    if (matchedTracks.length > 0) loadDestinationPlaylists();
+                    return;
+                }
+
+                if (data.type === 'error') {
+                    finished = true;
+                    updateProgress(0);
+                    flushResults(true);
+                    addLog(`Ошибка сопоставления: ${data.message || 'WebSocket error'}`, 'error');
+                    alert(data.message || 'Ошибка сопоставления');
+                    setMatchingState(false);
+                    resetMatchSocket();
+                }
+            };
+
+            matchWs.onerror = () => {
+                if (finished) return;
+                finished = true;
                 updateProgress(0);
-                addLog(`Ошибка сопоставления: ${err.message}`, 'error');
-                alert(err.message);
-            }
+                flushResults(true);
+                addLog('Ошибка WebSocket сопоставления.', 'error');
+                alert('Ошибка соединения при сопоставлении. Проверьте nginx location /api/ws/ и journalctl сервиса.');
+                setMatchingState(false);
+                resetMatchSocket();
+            };
+
+            matchWs.onclose = () => {
+                if (finished) return;
+                finished = true;
+                updateProgress(processed ? Math.round((processed / Math.max(total, 1)) * 100) : 0);
+                flushResults(true);
+                addLog('WebSocket сопоставления закрыт до завершения.', 'warning');
+                setMatchingState(false);
+                matchWs = null;
+            };
         }
 
         function renderResults() {
@@ -940,8 +1037,7 @@
         function openYandexAuthModal() {
             document.getElementById('yandexCodeDisplay').textContent = 'Запрашиваем код...';
             document.getElementById('yandexAuthModal').classList.remove('hidden');
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            yandexWs = new WebSocket(`${protocol}//${window.location.host}${API_BASE}/ws/yandex-auth`);
+            yandexWs = new WebSocket(websocketUrl('/ws/yandex-auth'));
             yandexWs.onmessage = async event => {
                 const data = JSON.parse(event.data);
                 if (data.type === 'code') {
