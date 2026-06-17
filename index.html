@@ -1129,13 +1129,13 @@
             info.className = 'track-card-info';
             const title = document.createElement('h4');
             title.className = 'track-title';
-            title.textContent = track.title || track.original;
+            title.textContent = track.title || track.original || 'Без названия';
             const artist = document.createElement('p');
             artist.className = 'track-artist';
-            artist.textContent = track.artist || '';
+            artist.textContent = track.artist || track.original || 'Без метаданных';
             const album = document.createElement('p');
             album.className = 'track-album';
-            album.textContent = track.album || '';
+            album.textContent = track.album || 'Источник: список для поиска';
             info.append(title, artist, album);
             const del = document.createElement('button');
             del.className = 'btn-icon delete mini-delete';

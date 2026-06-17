@@ -1008,15 +1008,17 @@ textarea {
 }
 
 .track-card {
-    display: flex;
+    display: grid;
+    grid-template-columns: 22px 64px minmax(0, 1fr) 28px;
     gap: 12px;
     padding: 12px;
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid var(--glass-border);
     border-radius: var(--border-radius-md);
     position: relative;
-    overflow: hidden;
+    overflow: visible;
     align-items: center;
+    min-height: 88px;
 }
 
 .track-card.selected-card {
@@ -1025,7 +1027,7 @@ textarea {
 }
 
 .match-card-checkbox {
-    flex: 0 0 auto;
+    justify-self: center;
 }
 
 .glass-card-hover {
@@ -1045,10 +1047,11 @@ textarea {
     border-radius: var(--border-radius-sm);
     object-fit: cover;
     background-color: rgba(0, 0, 0, 0.4);
+    justify-self: center;
 }
 
 .track-card-info {
-    flex-grow: 1;
+    min-width: 0;
     overflow: hidden;
 }
 
@@ -1099,14 +1102,12 @@ textarea {
 }
 
 .mini-delete {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 20px;
-    height: 20px;
-    font-size: 10px;
-    opacity: 0;
-    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    font-size: 11px;
+    opacity: 0.55;
+    border-radius: 8px;
+    justify-self: end;
 }
 
 .track-card:hover .mini-delete {
@@ -1834,14 +1835,14 @@ body[data-theme="forest"] .theme-dropdown {
     }
 
     .track-card {
-        align-items: flex-start;
-        padding: 12px 44px 12px 12px;
+        grid-template-columns: 22px 56px minmax(0, 1fr) 32px;
+        align-items: center;
+        padding: 12px;
     }
 
     .track-cover {
         width: 56px;
         height: 56px;
-        flex: 0 0 56px;
     }
 
     .track-title,
@@ -1874,8 +1875,6 @@ body[data-theme="forest"] .theme-dropdown {
 
     .mini-delete {
         opacity: 1;
-        top: 10px;
-        right: 10px;
         width: 28px;
         height: 28px;
     }
@@ -2062,13 +2061,13 @@ body[data-theme="forest"] .theme-dropdown {
     }
 
     .track-card {
+        grid-template-columns: 22px 50px minmax(0, 1fr) 30px;
         gap: 10px;
     }
 
     .track-cover {
         width: 50px;
         height: 50px;
-        flex-basis: 50px;
     }
 
     .unmatched-actions {
