@@ -2274,6 +2274,33 @@ body[data-theme="forest"] .theme-dropdown {
     gap: 12px;
 }
 
+.source-progress-line,
+.match-progress-line {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.source-progress-line {
+    margin-top: 10px;
+}
+
+.source-progress-line:not(.hidden) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.source-progress-line:not(.hidden)::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: var(--color-primary);
+    box-shadow: 0 0 12px rgba(0, 242, 254, 0.65);
+}
+
 .input-line {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -2301,6 +2328,10 @@ body[data-theme="forest"] .theme-dropdown {
     font-size: 13px;
     display: flex;
     gap: 10px;
+}
+
+.match-progress-line {
+    margin: -4px 0 12px;
 }
 
 #matchSection .tab-content.active {

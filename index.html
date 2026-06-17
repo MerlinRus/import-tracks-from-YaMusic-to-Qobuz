@@ -100,6 +100,7 @@
                                 Загрузить список <i class="fa-solid fa-arrow-right"></i>
                             </button>
                         </div>
+                        <div class="source-progress-line hidden" id="sourceProgressText"></div>
                     </section>
 
                     <section class="workflow-section glass-card" id="previewSection">
@@ -145,6 +146,7 @@
                         <div class="progress-container">
                             <div class="progress-bar" id="progressBar" style="width: 0%;"></div>
                         </div>
+                        <div class="match-progress-line" id="matchProgressText">Готов к поиску</div>
                         <div class="results-tabs">
                             <button type="button" class="tab-btn active" id="foundTabBtn">Найдено</button>
                             <button type="button" class="tab-btn" id="notFoundTabBtn">Не найдено</button>
@@ -284,6 +286,7 @@
         let yandexWs = null;
         let matchWs = null;
         let isMatching = false;
+        let isImportingSource = false;
 
         document.addEventListener('DOMContentLoaded', () => {
             bindStaticEvents();
@@ -579,9 +582,33 @@
             await importSource({ source: 'manual', input_type: 'manual', text });
         }
 
+        function setSourceLoading(active, message = '') {
+            isImportingSource = active;
+            ['loadUrlBtn', 'loadLikedBtn', 'loadManualBtn'].forEach(id => {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+                if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
+                btn.disabled = active;
+                btn.innerHTML = active
+                    ? 'Загружаем... <i class="fa-solid fa-circle-notch fa-spin"></i>'
+                    : btn.dataset.originalHtml;
+            });
+            const status = document.getElementById('sourceProgressText');
+            status.textContent = message;
+            status.classList.toggle('hidden', !active && !message);
+        }
+
         async function importSource(payload) {
+            if (isImportingSource) return;
+            const sourceName = serviceById(payload.source)?.name || payload.source;
+            const modeText = payload.input_type === 'liked'
+                ? 'Получаем «Мне нравится». Для большого списка это может занять до минуты...'
+                : payload.input_type === 'url'
+                    ? `Загружаем треки из ${sourceName} по ссылке...`
+                    : 'Разбираем список треков...';
             try {
-                addLog('Загружаем треки из источника...', 'system');
+                setSourceLoading(true, modeText);
+                addLog(modeText, 'system');
                 const data = await api('/import/source', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -594,8 +621,10 @@
                 matchedTracks = [];
                 unmatchedTracks = [];
                 renderAll();
+                setSourceLoading(false, `Загружено треков: ${parsedTracks.length}`);
                 addLog(`Загружено треков: ${parsedTracks.length}`, 'success');
             } catch (err) {
+                setSourceLoading(false, '');
                 addLog(`Ошибка загрузки источника: ${err.message}`, 'error');
                 alert(err.message);
             }
@@ -681,6 +710,21 @@
                 : 'Найти в сервисе назначения <i class="fa-solid fa-magnifying-glass"></i>';
         }
 
+        function updateMatchStatus(processed = 0, total = 0, label = '') {
+            const safeTotal = Math.max(total || 0, 0);
+            const safeProcessed = Math.max(processed || 0, 0);
+            const percent = safeTotal ? Math.round((safeProcessed / safeTotal) * 100) : 0;
+            const status = document.getElementById('matchProgressText');
+            if (!isMatching && !label) {
+                status.textContent = 'Готов к поиску';
+                return;
+            }
+            status.textContent = label || `Обработано ${safeProcessed} из ${safeTotal} (${percent}%). Найдено: ${matchedTracks.length}, не найдено: ${unmatchedTracks.length}.`;
+            if (isMatching) {
+                document.getElementById('matchBtn').innerHTML = `Ищем ${safeProcessed}/${safeTotal}... <i class="fa-solid fa-circle-notch fa-spin"></i>`;
+            }
+        }
+
         function resetMatchSocket() {
             if (matchWs) {
                 matchWs.onopen = null;
@@ -718,6 +762,7 @@
             let processed = 0;
             let finished = false;
             let lastRenderAt = 0;
+            let nextProgressLogAt = Math.min(100, Math.max(1, Math.ceil(total * 0.1)));
 
             const flushResults = (force = false) => {
                 const now = Date.now();
@@ -728,6 +773,7 @@
             };
 
             addLog(`Ищем треки в ${destinationName}...`, 'system');
+            updateMatchStatus(0, total, `Подключаемся к ${destinationName}. Подготовлено к поиску: ${total} треков.`);
             matchWs = new WebSocket(websocketUrl('/ws/match'));
 
             matchWs.onopen = () => {
@@ -758,6 +804,11 @@
                         });
                     }
                     updateProgress(Math.max(3, Math.round((processed / Math.max(total, 1)) * 100)));
+                    updateMatchStatus(processed, total);
+                    if (processed >= nextProgressLogAt && processed < total) {
+                        addLog(`Поиск: ${processed}/${total}. Найдено: ${matchedTracks.length}, не найдено: ${unmatchedTracks.length}.`, 'info');
+                        nextProgressLogAt += Math.min(100, Math.max(1, Math.ceil(total * 0.1)));
+                    }
                     flushResults(false);
                     return;
                 }
@@ -770,6 +821,7 @@
                     flushResults(true);
                     addLog(`Сопоставление завершено: ${data.matched ?? matchedTracks.length} из ${data.total ?? total}.`, 'success');
                     setMatchingState(false);
+                    updateMatchStatus(processed || total, total, `Готово: обработано ${data.total ?? total} треков. Найдено: ${data.matched ?? matchedTracks.length}, не найдено: ${unmatchedTracks.length}.`);
                     resetMatchSocket();
                     if (matchedTracks.length > 0) loadDestinationPlaylists();
                     return;
@@ -782,6 +834,7 @@
                     addLog(`Ошибка сопоставления: ${data.message || 'WebSocket error'}`, 'error');
                     alert(data.message || 'Ошибка сопоставления');
                     setMatchingState(false);
+                    updateMatchStatus(processed, total, 'Поиск остановлен из-за ошибки.');
                     resetMatchSocket();
                 }
             };
@@ -794,6 +847,7 @@
                 addLog('Ошибка WebSocket сопоставления.', 'error');
                 alert('Ошибка соединения при сопоставлении. Проверьте nginx location /api/ws/ и journalctl сервиса.');
                 setMatchingState(false);
+                updateMatchStatus(processed, total, 'Соединение поиска оборвалось. Часть результатов могла успеть загрузиться.');
                 resetMatchSocket();
             };
 
@@ -804,6 +858,7 @@
                 flushResults(true);
                 addLog('WebSocket сопоставления закрыт до завершения.', 'warning');
                 setMatchingState(false);
+                updateMatchStatus(processed, total, `Поиск остановился: обработано ${processed} из ${total}.`);
                 matchWs = null;
             };
         }
