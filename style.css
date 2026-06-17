@@ -789,6 +789,48 @@ textarea {
     z-index: 1;
 }
 
+.tracks-table tr.selected-row {
+    background: rgba(0, 242, 254, 0.045);
+}
+
+.track-select-checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--color-primary);
+    cursor: pointer;
+}
+
+.track-preview-cell {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.track-preview-cover {
+    width: 44px;
+    height: 44px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--glass-border);
+}
+
+.track-preview-meta {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.track-preview-meta small {
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .table-input {
     width: 100%;
     background: transparent !important;
@@ -832,6 +874,22 @@ textarea {
     justify-content: space-between;
     align-items: center;
     margin-top: auto;
+}
+
+.section-actions,
+.selection-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.selection-toolbar {
+    justify-content: space-between;
+    margin: -2px 0 12px;
+    color: var(--text-muted);
+    font-size: 13px;
 }
 
 /* Шаг 3: Сопоставление и Прогресс */
@@ -959,6 +1017,15 @@ textarea {
     position: relative;
     overflow: hidden;
     align-items: center;
+}
+
+.track-card.selected-card {
+    border-color: rgba(0, 242, 254, 0.32);
+    background: rgba(0, 242, 254, 0.055);
+}
+
+.match-card-checkbox {
+    flex: 0 0 auto;
 }
 
 .glass-card-hover {
@@ -1670,7 +1737,7 @@ body[data-theme="forest"] .theme-dropdown {
 
     .tracks-table tr {
         display: grid;
-        grid-template-columns: 34px minmax(0, 1fr) 36px;
+        grid-template-columns: 24px 28px minmax(0, 1fr) 36px;
         align-items: center;
         gap: 8px;
         padding: 10px;
@@ -2556,6 +2623,21 @@ body[data-theme="forest"] .theme-dropdown {
 
     .playlist-mode-selector {
         grid-template-columns: 1fr;
+    }
+
+    .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .section-actions,
+    .selection-toolbar {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .selection-toolbar span {
+        width: 100%;
     }
 
     .route-panel,

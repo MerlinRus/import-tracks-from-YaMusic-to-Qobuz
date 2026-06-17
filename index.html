@@ -109,14 +109,26 @@
                                 <span class="step-pill">2</span>
                                 <h2>Проверить список</h2>
                             </div>
-                            <button type="button" class="btn btn-secondary btn-xs" id="addTrackBtn">
-                                <i class="fa-solid fa-plus"></i> Строка
-                            </button>
+                            <div class="section-actions">
+                                <button type="button" class="btn btn-secondary btn-xs" id="selectSourceAllBtn" title="Выделить все (Ctrl+A)">
+                                    <i class="fa-solid fa-check-double"></i> Все
+                                </button>
+                                <button type="button" class="btn btn-secondary btn-xs" id="clearSourceSelectionBtn" title="Снять выделение (Ctrl+Shift+A)">
+                                    <i class="fa-regular fa-square"></i> Снять
+                                </button>
+                                <button type="button" class="btn btn-secondary btn-xs" id="invertSourceSelectionBtn" title="Инвертировать выделение (Ctrl+I)">
+                                    <i class="fa-solid fa-arrows-rotate"></i>
+                                </button>
+                                <button type="button" class="btn btn-secondary btn-xs" id="addTrackBtn">
+                                    <i class="fa-solid fa-plus"></i> Строка
+                                </button>
+                            </div>
                         </div>
                         <div class="tracks-table-wrapper route-table">
                             <table class="tracks-table">
                                 <thead>
                                     <tr>
+                                        <th style="width: 44px;"></th>
                                         <th style="width: 52px;">#</th>
                                         <th>Трек для поиска</th>
                                         <th style="width: 64px;"></th>
@@ -147,6 +159,18 @@
                             <div class="progress-bar" id="progressBar" style="width: 0%;"></div>
                         </div>
                         <div class="match-progress-line" id="matchProgressText">Готов к поиску</div>
+                        <div class="selection-toolbar">
+                            <span id="matchSelectionSummary">0 выбрано</span>
+                            <button type="button" class="btn btn-secondary btn-xs" id="selectMatchesAllBtn" title="Выделить все найденные (Ctrl+A)">
+                                <i class="fa-solid fa-check-double"></i> Все
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-xs" id="clearMatchesSelectionBtn" title="Снять выделение найденных (Ctrl+Shift+A)">
+                                <i class="fa-regular fa-square"></i> Снять
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-xs" id="invertMatchesSelectionBtn" title="Инвертировать найденные (Ctrl+I)">
+                                <i class="fa-solid fa-arrows-rotate"></i>
+                            </button>
+                        </div>
                         <div class="results-tabs">
                             <button type="button" class="tab-btn active" id="foundTabBtn">Найдено</button>
                             <button type="button" class="tab-btn" id="notFoundTabBtn">Не найдено</button>
@@ -295,6 +319,10 @@
         let matchWs = null;
         let isMatching = false;
         let isImportingSource = false;
+        let trackUidCounter = 0;
+        let selectedSourceTrackIds = new Set();
+        let selectedMatchedTrackIds = new Set();
+        let activeSelectionScope = 'source';
 
         document.addEventListener('DOMContentLoaded', () => {
             bindStaticEvents();
@@ -315,6 +343,12 @@
             document.getElementById('loadLikedBtn').addEventListener('click', loadLikedTracks);
             document.getElementById('loadManualBtn').addEventListener('click', loadManualTracks);
             document.getElementById('addTrackBtn').addEventListener('click', addTrackRow);
+            document.getElementById('selectSourceAllBtn').addEventListener('click', () => updateSourceSelection('all'));
+            document.getElementById('clearSourceSelectionBtn').addEventListener('click', () => updateSourceSelection('none'));
+            document.getElementById('invertSourceSelectionBtn').addEventListener('click', () => updateSourceSelection('invert'));
+            document.getElementById('selectMatchesAllBtn').addEventListener('click', () => updateMatchSelection('all'));
+            document.getElementById('clearMatchesSelectionBtn').addEventListener('click', () => updateMatchSelection('none'));
+            document.getElementById('invertMatchesSelectionBtn').addEventListener('click', () => updateMatchSelection('invert'));
             document.getElementById('matchBtn').addEventListener('click', startMatching);
             document.getElementById('transferBtn').addEventListener('click', transferTracks);
             document.getElementById('refreshPlaylistsBtn').addEventListener('click', loadDestinationPlaylists);
@@ -326,10 +360,17 @@
             });
             document.getElementById('closeSearchModalBtn').addEventListener('click', closeSearchModal);
             document.getElementById('closeYandexModalBtn').addEventListener('click', closeYandexAuthModal);
+            document.getElementById('previewSection').addEventListener('click', () => {
+                activeSelectionScope = 'source';
+            });
+            document.getElementById('matchSection').addEventListener('click', () => {
+                activeSelectionScope = 'matches';
+            });
             document.querySelectorAll('input[name="playlistMode"]').forEach(input => {
                 input.addEventListener('change', renderPlaylistMode);
             });
             document.getElementById('fileInput').addEventListener('change', handleFileSelect);
+            document.addEventListener('keydown', handleSelectionHotkeys);
             setupDropZone();
         }
 
@@ -370,6 +411,49 @@
             return `${protocol}//${window.location.host}${API_BASE}${path}`;
         }
 
+        function nextTrackUid(prefix = 'track') {
+            trackUidCounter += 1;
+            return `${prefix}-${Date.now()}-${trackUidCounter}`;
+        }
+
+        function trackQuery(track) {
+            if (typeof track === 'string') return track;
+            return track?.query || track?.original || track?.title || '';
+        }
+
+        function normalizeImportedTrack(item, index = 0) {
+            const raw = typeof item === 'string' ? { query: item } : (item || {});
+            const query = String(raw.query || raw.original || raw.title || '').trim();
+            return {
+                uid: raw.uid || nextTrackUid('src'),
+                query,
+                title: String(raw.title || '').trim(),
+                artist: String(raw.artist || '').trim(),
+                album: String(raw.album || '').trim(),
+                cover: raw.cover || '',
+                originalIndex: Number.isFinite(raw.originalIndex) ? raw.originalIndex : index
+            };
+        }
+
+        function normalizeImportedTracks(data) {
+            const source = Array.isArray(data.track_items) && data.track_items.length ? data.track_items : (data.tracks || []);
+            return source.map((item, index) => normalizeImportedTrack(item, index)).filter(track => track.query);
+        }
+
+        function visibleSelectionScope() {
+            const active = document.activeElement;
+            if (active && document.getElementById('matchSection').contains(active)) return 'matches';
+            if (active && document.getElementById('previewSection').contains(active)) return 'source';
+            return activeSelectionScope;
+        }
+
+        function isEditableTarget(target) {
+            const editable = target?.closest?.('input, textarea, select, [contenteditable="true"]');
+            if (!editable) return false;
+            if (editable.matches?.('input[type="checkbox"], input[type="radio"]')) return false;
+            return true;
+        }
+
         function renderAll() {
             renderServiceChips();
             renderRoute();
@@ -391,6 +475,7 @@
                 selectedDestination = value;
                 matchedTracks = [];
                 unmatchedTracks = [];
+                selectedMatchedTrackIds = new Set();
                 renderAll();
             });
         }
@@ -622,12 +707,14 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                parsedTracks = data.tracks || [];
+                parsedTracks = normalizeImportedTracks(data);
+                selectedSourceTrackIds = new Set(parsedTracks.map(track => track.uid));
                 if (data.playlist_name) {
                     document.getElementById('playlistNameInput').value = data.playlist_name;
                 }
                 matchedTracks = [];
                 unmatchedTracks = [];
+                selectedMatchedTrackIds = new Set();
                 renderAll();
                 setSourceLoading(false, `Загружено треков: ${parsedTracks.length}`);
                 addLog(`Загружено треков: ${parsedTracks.length}`, 'success');
@@ -677,36 +764,114 @@
         function renderTracksTable() {
             const tbody = document.getElementById('tracksTableBody');
             tbody.innerHTML = '';
-            document.getElementById('loadedBadge').textContent = `${parsedTracks.length} треков`;
+            const selectedCount = parsedTracks.filter(track => selectedSourceTrackIds.has(track.uid)).length;
+            document.getElementById('loadedBadge').textContent = `${selectedCount}/${parsedTracks.length} выбрано`;
             parsedTracks.forEach((track, index) => {
                 const tr = document.createElement('tr');
+                tr.className = selectedSourceTrackIds.has(track.uid) ? 'selected-row' : '';
+                const selectCell = document.createElement('td');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.className = 'track-select-checkbox';
+                checkbox.checked = selectedSourceTrackIds.has(track.uid);
+                checkbox.setAttribute('aria-label', `Выбрать трек ${index + 1}`);
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) selectedSourceTrackIds.add(track.uid);
+                    else selectedSourceTrackIds.delete(track.uid);
+                    renderTracksTable();
+                });
+                selectCell.appendChild(checkbox);
                 const idx = document.createElement('td');
                 idx.textContent = String(index + 1);
                 const nameCell = document.createElement('td');
+                const preview = document.createElement('div');
+                preview.className = 'track-preview-cell';
+                const cover = document.createElement('img');
+                cover.className = 'track-preview-cover';
+                cover.src = safeImageUrl(track.cover);
+                cover.alt = track.album || track.title || 'cover';
+                const previewMeta = document.createElement('div');
+                previewMeta.className = 'track-preview-meta';
                 const input = document.createElement('input');
                 input.className = 'table-input';
-                input.value = track;
+                input.value = track.query;
                 input.addEventListener('input', () => {
-                    parsedTracks[index] = input.value;
+                    track.query = input.value;
+                    if (!track.title) track.title = input.value;
                 });
-                nameCell.appendChild(input);
+                const hint = document.createElement('small');
+                hint.textContent = [track.artist, track.album].filter(Boolean).join(' • ') || 'Ручной список';
+                previewMeta.append(input, hint);
+                preview.append(cover, previewMeta);
+                nameCell.appendChild(preview);
                 const actionCell = document.createElement('td');
                 const del = document.createElement('button');
                 del.className = 'btn-icon delete';
                 del.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
                 del.addEventListener('click', () => {
+                    selectedSourceTrackIds.delete(track.uid);
                     parsedTracks.splice(index, 1);
                     renderTracksTable();
                 });
                 actionCell.appendChild(del);
-                tr.append(idx, nameCell, actionCell);
+                tr.append(selectCell, idx, nameCell, actionCell);
                 tbody.appendChild(tr);
             });
         }
 
         function addTrackRow() {
-            parsedTracks.push('');
+            const track = normalizeImportedTrack({ query: '' }, parsedTracks.length);
+            parsedTracks.push(track);
+            selectedSourceTrackIds.add(track.uid);
             renderTracksTable();
+        }
+
+        function updateSourceSelection(mode) {
+            if (mode === 'all') {
+                selectedSourceTrackIds = new Set(parsedTracks.map(track => track.uid));
+            } else if (mode === 'none') {
+                selectedSourceTrackIds = new Set();
+            } else if (mode === 'invert') {
+                const next = new Set();
+                parsedTracks.forEach(track => {
+                    if (!selectedSourceTrackIds.has(track.uid)) next.add(track.uid);
+                });
+                selectedSourceTrackIds = next;
+            }
+            renderTracksTable();
+        }
+
+        function updateMatchSelection(mode) {
+            if (mode === 'all') {
+                selectedMatchedTrackIds = new Set(matchedTracks.map(track => track.uid));
+            } else if (mode === 'none') {
+                selectedMatchedTrackIds = new Set();
+            } else if (mode === 'invert') {
+                const next = new Set();
+                matchedTracks.forEach(track => {
+                    if (!selectedMatchedTrackIds.has(track.uid)) next.add(track.uid);
+                });
+                selectedMatchedTrackIds = next;
+            }
+            renderResults();
+        }
+
+        function handleSelectionHotkeys(event) {
+            if (isEditableTarget(event.target)) return;
+            const key = event.key.toLowerCase();
+            const hasModifier = event.ctrlKey || event.metaKey;
+            if (!hasModifier) return;
+            const scope = visibleSelectionScope();
+            if (key === 'a' && event.shiftKey) {
+                event.preventDefault();
+                scope === 'matches' ? updateMatchSelection('none') : updateSourceSelection('none');
+            } else if (key === 'a') {
+                event.preventDefault();
+                scope === 'matches' ? updateMatchSelection('all') : updateSourceSelection('all');
+            } else if (key === 'i') {
+                event.preventDefault();
+                scope === 'matches' ? updateMatchSelection('invert') : updateSourceSelection('invert');
+            }
         }
 
         function setMatchingState(active) {
@@ -748,8 +913,15 @@
 
         async function startMatching() {
             if (isMatching) return;
-            if (parsedTracks.filter(Boolean).length === 0) {
+            const selectedSourceTracks = parsedTracks
+                .map((track, index) => ({ ...track, originalIndex: index }))
+                .filter(track => selectedSourceTrackIds.has(track.uid) && trackQuery(track).trim());
+            if (parsedTracks.filter(track => trackQuery(track).trim()).length === 0) {
                 alert('Сначала загрузите список треков.');
+                return;
+            }
+            if (selectedSourceTracks.length === 0) {
+                alert('Выберите хотя бы один трек для поиска.');
                 return;
             }
             if (!connections[selectedDestination]?.authorized) {
@@ -758,6 +930,8 @@
             }
             matchedTracks = [];
             unmatchedTracks = [];
+            selectedMatchedTrackIds = new Set();
+            activeSelectionScope = 'matches';
             updateProgress(10);
             renderResults();
             setMatchingState(true);
@@ -765,8 +939,8 @@
 
             const destination = selectedDestination;
             const destinationName = serviceById(destination)?.name || destination;
-            const tracks = parsedTracks.slice();
-            const total = tracks.filter(track => String(track || '').trim()).length;
+            const tracks = selectedSourceTracks.map(track => trackQuery(track));
+            const total = tracks.length;
             let processed = 0;
             let finished = false;
             let lastRenderAt = 0;
@@ -798,17 +972,26 @@
 
                 if (data.type === 'progress') {
                     processed = Number(data.processed || processed + 1);
+                    const source = selectedSourceTracks[data.index] || {};
                     if (data.match) {
-                        matchedTracks.push({
-                            originalIndex: data.index,
-                            original: data.query,
+                        const matched = {
+                            uid: nextTrackUid('match'),
+                            sourceUid: source.uid,
+                            originalIndex: Number.isFinite(source.originalIndex) ? source.originalIndex : data.index,
+                            original: source.query || data.query,
+                            sourceCover: source.cover || '',
                             ...data.match
-                        });
+                        };
+                        matchedTracks.push(matched);
+                        selectedMatchedTrackIds.add(matched.uid);
                     } else {
                         unmatchedTracks.push({
-                            originalIndex: data.index,
-                            original: data.query,
-                            searchQuery: data.query
+                            uid: nextTrackUid('unmatched'),
+                            sourceUid: source.uid,
+                            originalIndex: Number.isFinite(source.originalIndex) ? source.originalIndex : data.index,
+                            original: source.query || data.query,
+                            cover: source.cover || '',
+                            searchQuery: source.query || data.query
                         });
                     }
                     updateProgress(Math.max(3, Math.round((processed / Math.max(total, 1)) * 100)));
@@ -872,9 +1055,11 @@
         }
 
         function renderResults() {
-            document.getElementById('matchedCount').textContent = `${matchedTracks.length} найдено`;
+            const selectedMatches = matchedTracks.filter(track => selectedMatchedTrackIds.has(track.uid)).length;
+            document.getElementById('matchedCount').textContent = `${selectedMatches}/${matchedTracks.length} выбрано`;
             document.getElementById('unmatchedCount').textContent = `${unmatchedTracks.length} не найдено`;
-            document.getElementById('readyBadge').textContent = `${matchedTracks.length} готово`;
+            document.getElementById('readyBadge').textContent = `${selectedMatches} готово`;
+            document.getElementById('matchSelectionSummary').textContent = `${selectedMatches} выбрано из ${matchedTracks.length}`;
             renderFound();
             renderNotFound();
         }
@@ -889,7 +1074,7 @@
             matchedTracks
                 .slice()
                 .sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))
-                .forEach((track, index) => container.appendChild(trackCard(track, index)));
+                .forEach(track => container.appendChild(trackCard(track)));
         }
 
         function renderNotFound() {
@@ -922,12 +1107,23 @@
             });
         }
 
-        function trackCard(track, index) {
+        function trackCard(track) {
             const card = document.createElement('div');
             card.className = 'track-card glass-card-hover';
+            if (selectedMatchedTrackIds.has(track.uid)) card.classList.add('selected-card');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'track-select-checkbox match-card-checkbox';
+            checkbox.checked = selectedMatchedTrackIds.has(track.uid);
+            checkbox.setAttribute('aria-label', `Выбрать ${track.title || track.original || 'трек'}`);
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) selectedMatchedTrackIds.add(track.uid);
+                else selectedMatchedTrackIds.delete(track.uid);
+                renderResults();
+            });
             const img = document.createElement('img');
             img.className = 'track-cover';
-            img.src = safeImageUrl(track.cover);
+            img.src = safeImageUrl(track.cover || track.sourceCover);
             img.alt = track.album || track.title || 'cover';
             const info = document.createElement('div');
             info.className = 'track-card-info';
@@ -945,10 +1141,11 @@
             del.className = 'btn-icon delete mini-delete';
             del.innerHTML = '<i class="fa-solid fa-xmark"></i>';
             del.addEventListener('click', () => {
-                matchedTracks.splice(index, 1);
+                selectedMatchedTrackIds.delete(track.uid);
+                matchedTracks = matchedTracks.filter(item => item.uid !== track.uid);
                 renderResults();
             });
-            card.append(img, info, del);
+            card.append(checkbox, img, info, del);
             return card;
         }
 
@@ -1011,11 +1208,16 @@
         function selectManualMatch(track) {
             if (editingUnmatchedIndex === null) return;
             const original = unmatchedTracks[editingUnmatchedIndex];
-            matchedTracks.push({
+            const matched = {
+                uid: nextTrackUid('match'),
                 originalIndex: original.originalIndex,
                 original: original.original,
+                sourceUid: original.sourceUid,
+                sourceCover: original.cover || '',
                 ...track
-            });
+            };
+            matchedTracks.push(matched);
+            selectedMatchedTrackIds.add(matched.uid);
             unmatchedTracks.splice(editingUnmatchedIndex, 1);
             closeSearchModal();
             renderResults();
@@ -1053,15 +1255,20 @@
         }
 
         async function transferTracks() {
+            const selectedTracks = matchedTracks.filter(track => selectedMatchedTrackIds.has(track.uid));
             if (!matchedTracks.length) {
                 alert('Нет найденных треков для переноса.');
+                return;
+            }
+            if (!selectedTracks.length) {
+                alert('Выберите хотя бы один найденный трек для переноса.');
                 return;
             }
             const mode = document.querySelector('input[name="playlistMode"]:checked').value;
             const payload = {
                 destination: selectedDestination,
                 order: document.getElementById('playlistOrderSelect').value,
-                track_ids: matchedTracks
+                track_ids: selectedTracks
                     .slice()
                     .sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))
                     .map(track => track.uri || track.id)

@@ -462,6 +462,64 @@ def normalize_track_names(lines: List[str]) -> List[str]:
             raise ValueError(f"Слишком много треков. Максимум: {MAX_TRACKS_PER_REQUEST}")
     return track_names
 
+def yandex_cover_url(track) -> Optional[str]:
+    cover_uri = getattr(track, "cover_uri", None)
+    if not cover_uri:
+        albums = getattr(track, "albums", None) or []
+        if albums:
+            cover_uri = getattr(albums[0], "cover_uri", None) or getattr(albums[0], "og_image", None)
+    if not cover_uri:
+        cover_uri = getattr(track, "og_image", None)
+    if not cover_uri:
+        return None
+    cover_uri = str(cover_uri).replace("%%", "200x200")
+    if cover_uri.startswith("//"):
+        return f"https:{cover_uri}"
+    if cover_uri.startswith("http://"):
+        return "https://" + cover_uri[len("http://"):]
+    if cover_uri.startswith("https://"):
+        return cover_uri
+    return f"https://{cover_uri}"
+
+def yandex_track_item(track) -> dict:
+    artists = ", ".join([artist.name for artist in getattr(track, "artists", []) if getattr(artist, "name", None)])
+    title = getattr(track, "title", "") or ""
+    albums = getattr(track, "albums", None) or []
+    album = getattr(albums[0], "title", "") if albums else ""
+    query = f"{artists} - {title}" if artists else title
+    return {
+        "query": query,
+        "title": title,
+        "artist": artists,
+        "album": album,
+        "cover": yandex_cover_url(track),
+    }
+
+def normalize_track_items(items, fallback_tracks: Optional[List[str]] = None) -> List[dict]:
+    source_items = items or [{"query": query} for query in (fallback_tracks or [])]
+    normalized = []
+    for item in source_items:
+        if not isinstance(item, dict):
+            item = {"query": str(item)}
+        query = (item.get("query") or "").strip()
+        if not query:
+            title = (item.get("title") or "").strip()
+            artist = (item.get("artist") or "").strip()
+            query = f"{artist} - {title}" if artist and title else title or artist
+        if not query:
+            continue
+        query = normalize_track_names([query])[0]
+        normalized.append({
+            "query": query,
+            "title": (item.get("title") or "").strip(),
+            "artist": (item.get("artist") or "").strip(),
+            "album": (item.get("album") or "").strip(),
+            "cover": item.get("cover"),
+        })
+        if len(normalized) > MAX_TRACKS_PER_REQUEST:
+            raise ValueError(f"Слишком много треков. Максимум: {MAX_TRACKS_PER_REQUEST}")
+    return normalized
+
 def validate_query_text(query: str) -> str:
     query = (query or "").strip()
     if not query:
@@ -816,14 +874,14 @@ class YandexAdapter:
     def read_tracks(self, session: dict, payload: dict) -> dict:
         input_type = payload.get("input_type") or "url"
         if input_type == "liked":
-            tracks, playlist_name = read_yandex_liked_tracks(session)
-            return {"tracks": tracks, "playlist_name": playlist_name}
+            tracks, playlist_name, track_items = read_yandex_liked_tracks(session)
+            return {"tracks": tracks, "playlist_name": playlist_name, "track_items": track_items}
         if input_type == "url":
             url = payload.get("url") or ""
             if len(url) > MAX_YANDEX_URL_LENGTH:
                 raise ValueError(f"Ссылка длиннее {MAX_YANDEX_URL_LENGTH} символов")
-            tracks, playlist_name = parse_yandex_music_url(url, session)
-            return {"tracks": normalize_track_names(tracks), "playlist_name": playlist_name}
+            tracks, playlist_name, track_items = parse_yandex_music_url(url, session, include_items=True)
+            return {"tracks": normalize_track_names(tracks), "playlist_name": playlist_name, "track_items": track_items}
         return ManualSourceAdapter().read_tracks(session, payload)
 
 class QobuzAdapter:
@@ -1201,17 +1259,17 @@ def read_yandex_liked_tracks(session: dict):
     yandex_client = YandexMusicClient(yandex_token).init()
     tracks_list = yandex_client.users_likes_tracks()
     if not tracks_list or not tracks_list.tracks_ids:
-        return [], "Мне нравится"
-    track_names = []
+        return [], "Мне нравится", []
+    track_items = []
     for i in range(0, len(tracks_list.tracks_ids), 100):
         chunk_ids = tracks_list.tracks_ids[i:i+100]
         tracks = yandex_client.tracks(chunk_ids)
         for track in tracks:
             if not track:
                 continue
-            artists = ", ".join([artist.name for artist in track.artists])
-            track_names.append(f"{artists} - {track.title}")
-    return normalize_track_names(track_names), "Мне нравится"
+            track_items.append(yandex_track_item(track))
+    track_items = normalize_track_items(track_items)
+    return [item["query"] for item in track_items], "Мне нравится", track_items
 
 # Pydantic модели
 class ConfigData(BaseModel):
@@ -1486,6 +1544,7 @@ async def import_source(data: ImportSourceRequest, request: Request, response: R
     try:
         result = await asyncio.to_thread(adapter.read_tracks, session, data.dict())
         result["tracks"] = normalize_track_names(result.get("tracks") or [])
+        result["track_items"] = normalize_track_items(result.get("track_items"), result["tracks"])
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1737,7 +1796,7 @@ async def parse_tracks(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-def parse_yandex_music_url(url: str, session: dict):
+def parse_yandex_music_url(url: str, session: dict, include_items: bool = False):
     # Clean up the URL (remove query parameters)
     clean_url = url.split("?")[0].strip().rstrip("/")
     if clean_url.startswith(("music.yandex.ru/", "www.music.yandex.ru/")):
@@ -1759,7 +1818,21 @@ def parse_yandex_music_url(url: str, session: dict):
         raise ValueError(f"Не удалось подключиться к API Яндекс.Музыки: {e}")
     
     track_names = []
+    track_items = []
     playlist_name_suggestion = "Импортировано из Яндекс.Музыки"
+
+    def add_yandex_track(track):
+        item = yandex_track_item(track)
+        if item.get("query"):
+            track_names.append(item["query"])
+            track_items.append(item)
+
+    def finish_yandex_parse():
+        normalized_names = normalize_track_names(track_names)
+        normalized_items = normalize_track_items(track_items, normalized_names)
+        if include_items:
+            return normalized_names, playlist_name_suggestion, normalized_items
+        return normalized_names, playlist_name_suggestion
     
     # 1. Match Album + Track: https://music.yandex.ru/album/123/track/456
     album_track_match = re.search(r'/album/(\d+)/track/(\d+)', clean_url)
@@ -1769,15 +1842,14 @@ def parse_yandex_music_url(url: str, session: dict):
             tracks = yandex_client.tracks([track_id])
             if tracks:
                 track = tracks[0]
-                artists = ", ".join([a.name for a in track.artists])
-                track_names.append(f"{artists} - {track.title}")
-                playlist_name_suggestion = f"{artists} - {track.title}"
+                add_yandex_track(track)
+                playlist_name_suggestion = track_items[-1]["query"] if track_items else playlist_name_suggestion
             else:
                 raise ValueError("Трек не найден в базе данных Яндекс.Музыки")
         except Exception as e:
             logger.error(f"Error fetching track {track_id}: {e}")
             raise ValueError(f"Ошибка при загрузке трека: {e}")
-        return track_names, playlist_name_suggestion
+        return finish_yandex_parse()
 
     # 2. Match Album: https://music.yandex.ru/album/123
     album_match = re.search(r'/album/(\d+)', clean_url)
@@ -1794,12 +1866,11 @@ def parse_yandex_music_url(url: str, session: dict):
             
             for volume in album.volumes:
                 for track in volume:
-                    artists = ", ".join([a.name for a in track.artists])
-                    track_names.append(f"{artists} - {track.title}")
+                    add_yandex_track(track)
         except Exception as e:
             logger.error(f"Error fetching album {album_id}: {e}")
             raise ValueError(f"Ошибка при загрузке альбома: {e}")
-        return track_names, playlist_name_suggestion
+        return finish_yandex_parse()
 
     # 3. Match Liked Playlist: https://music.yandex.ru/users/([^/]+)/(tracks|liked|playlists/likes|playlists/3)
     liked_match = re.search(r'/users/([^/]+)/(tracks|liked|playlists/likes|playlists/3)', clean_url)
@@ -1819,12 +1890,11 @@ def parse_yandex_music_url(url: str, session: dict):
                 for track in tracks:
                     if not track:
                         continue
-                    artists = ", ".join([a.name for a in track.artists])
-                    track_names.append(f"{artists} - {track.title}")
+                    add_yandex_track(track)
         except Exception as e:
             logger.error(f"Error fetching liked tracks: {e}")
             raise ValueError(f"Ошибка при загрузке 'Мне нравится': {e}")
-        return track_names, playlist_name_suggestion
+        return finish_yandex_parse()
 
     # 4. Match Playlist:
     # - https://music.yandex.ru/users/([^/]+)/playlists/(\d+)
@@ -1892,13 +1962,12 @@ def parse_yandex_music_url(url: str, session: dict):
                 track = item.track
                 if not track:
                     continue
-                artists = ", ".join([a.name for a in track.artists])
-                track_names.append(f"{artists} - {track.title}")
+                add_yandex_track(track)
         except Exception as e:
             logger.error(f"Error fetching playlist kind={kind} uid={uid}: {e}")
             raise ValueError(f"Ошибка при загрузке плейлиста: {e}. Возможно, плейлист является приватным.")
             
-        return track_names, playlist_name_suggestion
+        return finish_yandex_parse()
 
     # 4. Match Artist: https://music.yandex.ru/artist/123
     artist_match = re.search(r'/artist/(\d+)', clean_url)
@@ -1911,12 +1980,11 @@ def parse_yandex_music_url(url: str, session: dict):
             playlist_name_suggestion = f"Лучшее: {info.artist.name}"
             if info.popular_tracks:
                 for track in info.popular_tracks:
-                    artists = ", ".join([a.name for a in track.artists])
-                    track_names.append(f"{artists} - {track.title}")
+                    add_yandex_track(track)
         except Exception as e:
             logger.error(f"Error fetching artist {artist_id}: {e}")
             raise ValueError(f"Ошибка при загрузке исполнителя: {e}")
-        return track_names, playlist_name_suggestion
+        return finish_yandex_parse()
 
     raise ValueError("Неподдерживаемый формат ссылки Яндекс.Музыки. Пожалуйста, укажите ссылку на плейлист, альбом, трек или исполнителя.")
 
@@ -2174,8 +2242,8 @@ def parse_yandex_liked(request: Request, response: Response):
     session = get_or_create_session(request, response)
     enforce_http_rate_limit("yandex_liked", request, session)
     try:
-        track_names, playlist_name = read_yandex_liked_tracks(session)
-        return {"tracks": track_names, "playlist_name": playlist_name}
+        track_names, playlist_name, track_items = read_yandex_liked_tracks(session)
+        return {"tracks": track_names, "playlist_name": playlist_name, "track_items": track_items}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
