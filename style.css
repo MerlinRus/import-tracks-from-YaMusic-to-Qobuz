@@ -2486,6 +2486,20 @@ body[data-theme="forest"] .theme-dropdown {
     outline-offset: 2px;
 }
 
+.playlist-filter-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.playlist-filter-status {
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
 #matchSection .tab-content.active {
     display: grid;
     gap: 10px;
@@ -2630,9 +2644,14 @@ body[data-theme="forest"] .theme-dropdown {
     }
 
     .section-actions,
-    .selection-toolbar {
+    .selection-toolbar,
+    .playlist-filter-actions {
         width: 100%;
         justify-content: flex-start;
+    }
+
+    .playlist-filter-actions .btn {
+        width: 100%;
     }
 
     .selection-toolbar span {

@@ -387,6 +387,7 @@ RATE_LIMIT_RULES = {
     "parse_tracks": (30, 300),
     "parse_url": (15, 300),
     "manual_search": (120, 300),
+    "playlist_read": (60, 300),
     "playlist_write": (20, 300),
     "match_ws": (10, 300),
     "yandex_auth_ws": (5, 600),
@@ -538,6 +539,23 @@ def validate_playlist_name(name: Optional[str]) -> Optional[str]:
             detail=f"Название плейлиста длиннее {MAX_PLAYLIST_NAME_LENGTH} символов",
         )
     return name
+
+def normalize_destination_track_id(service: str, track_id) -> Optional[str]:
+    value = str(track_id or "").strip()
+    if not value:
+        return None
+    if service == "qobuz":
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            return None
+        return str(numeric) if numeric > 0 else None
+    if service == "spotify":
+        prefix = "spotify:track:"
+        if value.startswith(prefix):
+            return value[len(prefix):]
+        return value
+    return value
 
 def update_session_values(session_id: str, updates: dict):
     if not updates:
@@ -977,6 +995,10 @@ class QobuzAdapter:
             ))
         return items
 
+    def list_playlist_track_ids(self, session: dict, playlist_id: str) -> List[str]:
+        qobuz_client, _profile = ensure_qobuz_authorized(session)
+        return [str(track_id) for track_id in get_playlist_track_ids(qobuz_client, playlist_id)]
+
     def search_track(self, session: dict, query: str) -> Optional[ResolvedTrack]:
         result = search_track_rich(make_qobuz_client(session), query, session)
         if not result:
@@ -1195,6 +1217,25 @@ class SpotifyAdapter:
             path = next_url.replace(self.api_base, "") if next_url else None
         return playlists
 
+    def list_playlist_track_ids(self, session: dict, playlist_id: str) -> List[str]:
+        track_ids = []
+        path = f"/playlists/{playlist_id}/tracks"
+        params = {
+            "limit": 100,
+            "fields": "next,items(track(id,uri))",
+        }
+        while path:
+            data = self.request(session, "GET", path, params=params)
+            params = None
+            for item in data.get("items", []):
+                track = item.get("track") or {}
+                track_id = normalize_destination_track_id(self.service_id, track.get("id") or track.get("uri"))
+                if track_id:
+                    track_ids.append(track_id)
+            next_url = data.get("next")
+            path = next_url.replace(self.api_base, "") if next_url else None
+        return track_ids
+
     def search_track(self, session: dict, query: str) -> Optional[ResolvedTrack]:
         data = self.request(session, "GET", "/search", params={"q": query, "type": "track", "limit": 1})
         items = ((data.get("tracks") or {}).get("items") or [])
@@ -1315,6 +1356,10 @@ class MatchRequest(BaseModel):
     destination: str = "qobuz"
     tracks: List[str]
 
+class PlaylistMissingRequest(BaseModel):
+    playlist_id: str
+    track_ids: List[str]
+
 class TransferData(BaseModel):
     destination: str = "qobuz"
     name: Optional[str] = None
@@ -1378,10 +1423,20 @@ def transfer_tracks_sync(session: dict, data: TransferData) -> dict:
             raise HTTPException(status_code=400, detail="Название плейлиста не указано")
         playlist_id = adapter.create_playlist(session, playlist_name)
         is_new = True
-    elif data.destination == "qobuz":
-        qobuz_client, _profile = ensure_qobuz_authorized(session)
-        existing_ids = set(get_playlist_track_ids(qobuz_client, playlist_id))
-        track_ids = [track_id for track_id in track_ids if int(track_id) not in existing_ids]
+    elif hasattr(adapter, "list_playlist_track_ids"):
+        existing_ids = {
+            normalized
+            for normalized in (
+                normalize_destination_track_id(data.destination, track_id)
+                for track_id in adapter.list_playlist_track_ids(session, playlist_id)
+            )
+            if normalized
+        }
+        track_ids = [
+            track_id
+            for track_id in track_ids
+            if normalize_destination_track_id(data.destination, track_id) not in existing_ids
+        ]
         if not track_ids:
             account = adapter.auth_status(session).to_dict()
             return TransferResult(
@@ -1411,6 +1466,43 @@ def transfer_tracks_sync(session: dict, data: TransferData) -> dict:
         detail="Часть треков не удалось добавить",
         account=account,
     ).to_dict()
+
+def playlist_missing_tracks_sync(session: dict, service: str, data: PlaylistMissingRequest) -> dict:
+    ensure_service_enabled(service, "destination")
+    adapter = get_adapter(service)
+    if not hasattr(adapter, "list_playlist_track_ids"):
+        raise HTTPException(status_code=400, detail="Сервис пока не поддерживает проверку недостающих треков")
+    playlist_id = (data.playlist_id or "").strip()
+    if not playlist_id:
+        raise HTTPException(status_code=400, detail="Выберите плейлист назначения")
+    if len(data.track_ids) > MAX_TRACKS_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"Слишком много треков. Максимум: {MAX_TRACKS_PER_REQUEST}")
+
+    requested_ids = []
+    for track_id in data.track_ids:
+        normalized = normalize_destination_track_id(service, track_id)
+        if normalized:
+            requested_ids.append(normalized)
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="Список ID треков пуст")
+
+    playlist_ids = adapter.list_playlist_track_ids(session, playlist_id)
+    existing_ids = {
+        normalized
+        for normalized in (normalize_destination_track_id(service, track_id) for track_id in playlist_ids)
+        if normalized
+    }
+    missing_ids = [track_id for track_id in requested_ids if track_id not in existing_ids]
+    existing_requested_ids = [track_id for track_id in requested_ids if track_id in existing_ids]
+    return {
+        "playlist_id": playlist_id,
+        "checked_count": len(requested_ids),
+        "playlist_track_count": len(existing_ids),
+        "missing_count": len(missing_ids),
+        "existing_count": len(existing_requested_ids),
+        "missing_track_ids": missing_ids,
+        "existing_track_ids": existing_requested_ids,
+    }
 
 @app.get("/")
 async def get_index(request: Request):
@@ -1564,6 +1656,12 @@ async def list_destination_playlists(service: str, request: Request, response: R
         raise HTTPException(status_code=400, detail="Сервис не поддерживает список плейлистов")
     playlists = await asyncio.to_thread(adapter.list_playlists, session)
     return {"playlists": [playlist.to_dict() for playlist in playlists]}
+
+@app.post("/api/destinations/{service}/playlists/missing")
+async def playlist_missing_tracks(service: str, data: PlaylistMissingRequest, request: Request, response: Response):
+    session = get_or_create_session(request, response)
+    enforce_http_rate_limit("playlist_read", request, session)
+    return await asyncio.to_thread(playlist_missing_tracks_sync, session, service, data)
 
 @app.post("/api/transfer")
 async def transfer_tracks(data: TransferData, request: Request, response: Response):

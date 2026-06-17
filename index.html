@@ -217,6 +217,15 @@
                                     <i class="fa-solid fa-rotate"></i>
                                 </button>
                             </div>
+                            <div class="playlist-filter-actions">
+                                <button type="button" class="btn btn-secondary btn-sm" id="showMissingOnlyBtn">
+                                    <i class="fa-solid fa-filter"></i> Показать только недостающие
+                                </button>
+                                <button type="button" class="btn btn-secondary btn-sm hidden" id="showAllMatchesBtn">
+                                    <i class="fa-solid fa-list"></i> Показать все
+                                </button>
+                            </div>
+                            <div class="playlist-filter-status hidden" id="playlistFilterStatus"></div>
                         </div>
                         <div class="input-group">
                             <label for="playlistOrderSelect">Порядок добавления</label>
@@ -323,6 +332,7 @@
         let selectedSourceTrackIds = new Set();
         let selectedMatchedTrackIds = new Set();
         let activeSelectionScope = 'source';
+        let missingFilterBackup = null;
 
         document.addEventListener('DOMContentLoaded', () => {
             bindStaticEvents();
@@ -352,6 +362,9 @@
             document.getElementById('matchBtn').addEventListener('click', startMatching);
             document.getElementById('transferBtn').addEventListener('click', transferTracks);
             document.getElementById('refreshPlaylistsBtn').addEventListener('click', loadDestinationPlaylists);
+            document.getElementById('playlistSelect').addEventListener('change', () => clearMissingFilter(false));
+            document.getElementById('showMissingOnlyBtn').addEventListener('click', showMissingOnly);
+            document.getElementById('showAllMatchesBtn').addEventListener('click', () => clearMissingFilter(true));
             document.getElementById('foundTabBtn').addEventListener('click', () => switchResultsTab('found'));
             document.getElementById('notFoundTabBtn').addEventListener('click', () => switchResultsTab('notFound'));
             document.getElementById('manualSearchBtn').addEventListener('click', runManualSearch);
@@ -476,6 +489,7 @@
                 matchedTracks = [];
                 unmatchedTracks = [];
                 selectedMatchedTrackIds = new Set();
+                clearMissingFilter(false);
                 renderAll();
             });
         }
@@ -715,6 +729,7 @@
                 matchedTracks = [];
                 unmatchedTracks = [];
                 selectedMatchedTrackIds = new Set();
+                clearMissingFilter(false);
                 renderAll();
                 setSourceLoading(false, `Загружено треков: ${parsedTracks.length}`);
                 addLog(`Загружено треков: ${parsedTracks.length}`, 'success');
@@ -856,6 +871,99 @@
             renderResults();
         }
 
+        function canonicalDestinationTrackId(value, destination = selectedDestination) {
+            const id = String(value || '').trim();
+            if (!id) return '';
+            if (destination === 'spotify') {
+                return id.startsWith('spotify:track:') ? id.slice('spotify:track:'.length) : id;
+            }
+            if (destination === 'qobuz') {
+                const numeric = Number.parseInt(id, 10);
+                return Number.isFinite(numeric) && numeric > 0 ? String(numeric) : '';
+            }
+            return id;
+        }
+
+        function destinationTrackId(track) {
+            return track?.uri || track?.id || '';
+        }
+
+        function renderMissingFilterState(message = '') {
+            const status = document.getElementById('playlistFilterStatus');
+            const showAllBtn = document.getElementById('showAllMatchesBtn');
+            const showMissingBtn = document.getElementById('showMissingOnlyBtn');
+            const active = Boolean(missingFilterBackup);
+            showAllBtn.classList.toggle('hidden', !active);
+            showMissingBtn.disabled = active || isMatching || !matchedTracks.length;
+            status.textContent = message || (active ? 'Показаны только треки, которых нет в выбранном плейлисте.' : '');
+            status.classList.toggle('hidden', !status.textContent);
+        }
+
+        function clearMissingFilter(restore = false) {
+            if (restore && missingFilterBackup) {
+                matchedTracks = missingFilterBackup.tracks;
+                selectedMatchedTrackIds = new Set(missingFilterBackup.selectedIds);
+                missingFilterBackup = null;
+                renderResults();
+                renderMissingFilterState('Показан полный список совпадений.');
+                return;
+            }
+            missingFilterBackup = null;
+            renderMissingFilterState('');
+        }
+
+        async function showMissingOnly() {
+            const mode = document.querySelector('input[name="playlistMode"]:checked')?.value || 'new';
+            if (mode !== 'existing') {
+                alert('Сначала выберите режим добавления в существующий плейлист.');
+                return;
+            }
+            const playlistId = document.getElementById('playlistSelect').value;
+            if (!playlistId) {
+                alert('Выберите плейлист назначения.');
+                return;
+            }
+            const sourceTracks = missingFilterBackup?.tracks || matchedTracks.slice();
+            const trackIds = sourceTracks.map(destinationTrackId).filter(Boolean);
+            if (!trackIds.length) {
+                alert('Нет найденных треков для проверки.');
+                return;
+            }
+
+            const btn = document.getElementById('showMissingOnlyBtn');
+            const originalHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = 'Проверяем... <i class="fa-solid fa-circle-notch fa-spin"></i>';
+            renderMissingFilterState('Проверяем выбранный плейлист...');
+            try {
+                const data = await api(`/destinations/${selectedDestination}/playlists/missing`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ playlist_id: playlistId, track_ids: trackIds })
+                });
+                if (!missingFilterBackup) {
+                    missingFilterBackup = {
+                        tracks: matchedTracks.slice(),
+                        selectedIds: Array.from(selectedMatchedTrackIds)
+                    };
+                }
+                const missingIds = new Set((data.missing_track_ids || []).map(id => canonicalDestinationTrackId(id)));
+                matchedTracks = sourceTracks.filter(track => missingIds.has(canonicalDestinationTrackId(destinationTrackId(track))));
+                selectedMatchedTrackIds = new Set(matchedTracks.map(track => track.uid));
+                renderResults();
+                const message = `Недостающие: ${data.missing_count} из ${data.checked_count}. Уже в плейлисте: ${data.existing_count}.`;
+                renderMissingFilterState(message);
+                addLog(message, 'success');
+            } catch (err) {
+                renderMissingFilterState('');
+                addLog(`Не удалось проверить плейлист: ${err.message}`, 'error');
+                alert(err.message);
+            } finally {
+                btn.innerHTML = originalHtml;
+                renderMissingFilterState(document.getElementById('playlistFilterStatus').textContent);
+            }
+        }
+
         function handleSelectionHotkeys(event) {
             if (isEditableTarget(event.target)) return;
             const key = event.key.toLowerCase();
@@ -931,6 +1039,7 @@
             matchedTracks = [];
             unmatchedTracks = [];
             selectedMatchedTrackIds = new Set();
+            clearMissingFilter(false);
             activeSelectionScope = 'matches';
             updateProgress(10);
             renderResults();
@@ -1251,7 +1360,11 @@
             const mode = document.querySelector('input[name="playlistMode"]:checked')?.value || 'new';
             document.getElementById('newPlaylistGroup').classList.toggle('hidden', mode !== 'new');
             document.getElementById('existingPlaylistGroup').classList.toggle('hidden', mode !== 'existing');
-            if (mode === 'existing') loadDestinationPlaylists();
+            if (mode === 'existing') {
+                loadDestinationPlaylists();
+            } else {
+                clearMissingFilter(false);
+            }
         }
 
         async function transferTracks() {
