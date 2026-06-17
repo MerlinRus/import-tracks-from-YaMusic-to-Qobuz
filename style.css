@@ -2303,6 +2303,30 @@ body[data-theme="forest"] .theme-dropdown {
     gap: 10px;
 }
 
+#matchSection .tab-content.active {
+    display: grid;
+    gap: 10px;
+    max-height: clamp(320px, 48vh, 560px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 6px;
+    scrollbar-gutter: stable;
+}
+
+#matchSection .tab-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+#matchSection .tab-content::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 999px;
+}
+
+#matchSection .tab-content::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--color-primary), var(--color-secondary));
+    border-radius: 999px;
+}
+
 .route-mode {
     margin-bottom: 14px;
 }
